@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import * as os from 'os';
 import { ConfigOptions, createConfig } from './config/config';
+import path from 'path';
 
 export async function runAnon(options?: ConfigOptions) {
   const configPath = await createConfig(options);
@@ -15,7 +16,7 @@ function runBinary(name: string, configPath?: string) {
   const platform = os.platform();
   const arch = os.arch();
 
-  let binaryPath = `./bin/${platform}/${arch}/${name}`;
+  let binaryPath = path.join(__dirname, 'bin', platform, name);
   if (platform === 'win32') {
     binaryPath += '.exe';
   }
