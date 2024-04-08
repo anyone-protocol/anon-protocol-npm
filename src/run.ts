@@ -1,18 +1,37 @@
-import { spawn } from 'child_process';
+import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import * as os from 'os';
 import { ConfigOptions, createConfig } from './config/config';
 import path from 'path';
 
-export async function runAnon(options?: ConfigOptions) {
-  const configPath = await createConfig(options);
-  runBinary('anon', configPath);
+export class Anon {
+  options?: ConfigOptions;
+  process?: ChildProcessWithoutNullStreams;
+
+  constructor(options?: ConfigOptions) {
+    this.options = options;
+  };
+
+  async start() {
+    if (this.process !== undefined) {
+      throw new Error('Anon process already started');
+    }
+
+    const configPath = await createConfig(this.options);
+    this.process = runBinary('anon', configPath, this.onStop);
+  }
+
+  async stop() {
+    if (this.process !== undefined) {
+      this.process.kill('SIGTERM');
+    }
+  }
+
+  private onStop() {
+    this.process = undefined;
+  }
 }
 
-export async function runAnonGencert() {
-  runBinary('anon-gencert');
-}
-
-function runBinary(name: string, configPath?: string) {
+function runBinary(name: string, configPath?: string, onStop?: VoidFunction): ChildProcessWithoutNullStreams {
   const platform = os.platform();
   const arch = os.arch();
 
@@ -37,6 +56,16 @@ function runBinary(name: string, configPath?: string) {
   });
 
   child.on('close', (code) => {
-    console.log(`${code}`);
+    if (onStop !== undefined) {
+      onStop();
+    }
   });
+
+  child.on('exit', (code) => {
+    if (onStop !== undefined) {
+      onStop();
+    }
+  });
+
+  return child;
 }

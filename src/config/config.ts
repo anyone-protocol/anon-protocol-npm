@@ -4,6 +4,7 @@ import path from 'path';
 
 export interface ConfigOptions {
   socksPort?: number;
+  orPort?: number;
 }
 
 export async function createConfig(options?: ConfigOptions) {
@@ -13,15 +14,15 @@ export async function createConfig(options?: ConfigOptions) {
   const tempDataDirName = `anon-data-${Date.now()}`;
   const tempDataDirPath = path.join(os.tmpdir(), tempDataDirName);
 
+  const socksPort = options?.socksPort ?? 0;
+  const orPort = options?.socksPort ?? 0;
+
   let configItems = [
     `DataDirectory ${tempDataDirPath}`,
   ];
 
-  if (options !== undefined) {
-    if (options.socksPort !== undefined) {
-      configItems.push(`SOCKSPort ${options.socksPort}`);
-    }
-  }
+  configItems.push(`SOCKSPort ${socksPort}`);
+  configItems.push(`ORPort ${orPort}`);
 
   const configData = configItems.join("\n");
   await fs.writeFile(tempAnonrcPath, configData);
