@@ -32,7 +32,15 @@ if (args.values.orPort !== undefined) {
   }
 }
 
+const anon = new Anon({ socksPort: socksPort, orPort: orPort });
+
 (async () => {
-  const anon = new Anon({ socksPort: socksPort, orPort: orPort });
   await anon.start();
 })();
+
+function gracefulShutdown() {
+  anon.stop();
+}
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);

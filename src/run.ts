@@ -7,23 +7,27 @@ export class Anon {
   options?: ConfigOptions;
   process?: ChildProcessWithoutNullStreams;
 
-  constructor(options?: ConfigOptions) {
+  public constructor(options?: ConfigOptions) {
     this.options = options;
   };
 
-  async start() {
+  public async start() {
     if (this.process !== undefined) {
       throw new Error('Anon process already started');
     }
 
     const configPath = await createConfig(this.options);
-    this.process = runBinary('anon', configPath, this.onStop);
+    this.process = runBinary('anon', configPath, () => this.onStop());
   }
 
-  async stop() {
+  public async stop() {
     if (this.process !== undefined) {
       this.process.kill('SIGTERM');
     }
+  }
+
+  public isRunning(): boolean {
+    return this.process !== undefined;
   }
 
   private onStop() {
