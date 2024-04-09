@@ -1,6 +1,6 @@
 {
   "name": "anon-protocol",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "",
   "main": "out/index.js",
   "bin": {
@@ -13,7 +13,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "SEE LICENSE IN LICENSE.md",
+  "license": "BSD-3-Clause",
   "devDependencies": {
     "@types/node": "^20.12.2",
     "typescript": "^5.4.3"
