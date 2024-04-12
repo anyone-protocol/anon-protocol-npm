@@ -61,3 +61,13 @@ Response should look like:
 Real IP: 94.16.115.212
 Anon IP: 89.58.10.128
 ```
+
+## Docs
+
+To generate API docs:
+
+```sh
+npm run typedoc
+```
+
+Docs will be generated to `docs/` directory, open `index.html` to view it
