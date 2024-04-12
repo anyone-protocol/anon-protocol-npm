@@ -3,14 +3,20 @@ import * as os from 'os';
 import { ConfigOptions, createConfigFile } from './config/config';
 import path from 'path';
 
+/**
+ * Allows to run Anon client with different configuration options
+ */
 export class Anon {
-  options?: ConfigOptions;
-  process?: ChildProcessWithoutNullStreams;
+  private options?: ConfigOptions;
+  private process?: ChildProcessWithoutNullStreams;
 
   public constructor(options?: ConfigOptions) {
     this.options = options;
   };
 
+  /**
+   * Starts Anon client with options configured in constructor
+   */
   public async start() {
     if (this.process !== undefined) {
       throw new Error('Anon process already started');
@@ -20,12 +26,19 @@ export class Anon {
     this.process = this.runBinary('anon', configPath, () => this.onStop());
   }
 
+  /**
+   * Stops Anon client
+   */
   public async stop() {
     if (this.process !== undefined) {
       this.process.kill('SIGTERM');
     }
   }
 
+  /**
+   * Allows to check if Anon is running
+   * @returns true if Anon is running
+   */
   public isRunning(): boolean {
     return this.process !== undefined;
   }

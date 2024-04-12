@@ -3,9 +3,13 @@ import os from 'os';
 import path from 'path';
 
 export interface ConfigOptions {
+  /* Enables logging when set to true */
   displayLog?: boolean;
 
+  /* Sets SOCKS5 port of the client */
   socksPort?: number;
+
+  /* Sets OR port of the relay */
   orPort?: number;
 }
 

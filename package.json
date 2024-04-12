@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "typedoc": "typedoc",
     "prepublish": "npm run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -16,6 +17,7 @@
   "license": "BSD-3-Clause",
   "devDependencies": {
     "@types/node": "^20.12.2",
+    "typedoc": "^0.25.13",
     "typescript": "^5.4.3"
   }
 }
