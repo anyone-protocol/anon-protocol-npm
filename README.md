@@ -53,6 +53,14 @@ const client = axios.create({ httpsAgent });
   await anon.stop();
 })();
 
+function shutdown() {
+  anon.stop();
+  process.exit(0);
+}
+
+// Graceful shutdown
+process.once('SIGINT', shutdown);
+process.once('SIGTERM', shutdown);
 ```
 
 Response should look like:
