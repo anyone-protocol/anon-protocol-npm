@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { parseArgs } from "util";
-import { Anon } from "./run";
+import { Anon } from "./anon";
 
 const args = parseArgs({
   options: {
@@ -32,7 +32,7 @@ if (args.values.orPort !== undefined) {
   }
 }
 
-const anon = new Anon({ socksPort: socksPort, orPort: orPort });
+const anon = new Anon({ displayLog: true, socksPort: socksPort, orPort: orPort });
 
 (async () => {
   await anon.start();

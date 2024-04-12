@@ -3,11 +3,13 @@ import os from 'os';
 import path from 'path';
 
 export interface ConfigOptions {
+  displayLog?: boolean;
+
   socksPort?: number;
   orPort?: number;
 }
 
-export async function createConfig(options?: ConfigOptions) {
+export async function createConfigFile(options?: ConfigOptions) {
   const tempAnonrcName = `anonrc-${Date.now()}`;
   const tempAnonrcPath = path.join(os.tmpdir(), tempAnonrcName);
 
