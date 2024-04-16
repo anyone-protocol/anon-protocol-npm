@@ -1,10 +1,11 @@
 {
   "name": "anon-protocol",
-  "version": "0.0.17",
+  "version": "0.0.18",
   "description": "",
   "main": "out/index.js",
   "bin": {
-    "anon-protocol": "./out/anon-cli.js"
+    "anon-protocol": "./out/anon-cli.js",
+    "anon-proxy": "./out/anon-proxy-cli.js"
   },
   "scripts": {
     "build": "tsc",
