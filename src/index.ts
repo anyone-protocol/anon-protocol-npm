@@ -1,2 +1,3 @@
 export { Anon } from './anon';
-export { ConfigOptions } from './config/config';
+export { AnonProxy } from './anon-proxy';
+export { AnonConfig, AnonProxyConfig } from './config/config';

@@ -1,16 +1,15 @@
 import { ChildProcess, spawn } from 'child_process';
-import * as os from 'os';
-import { ConfigOptions, createConfigFile } from './config/config';
-import path from 'path';
+import { AnonConfig, createAnonConfigFile } from './config/config';
+import { getBinaryPath } from './utils';
 
 /**
  * Allows to run Anon client with different configuration options
  */
 export class Anon {
-  private options?: ConfigOptions;
+  private options?: AnonConfig;
   private process?: ChildProcess;
 
-  public constructor(options?: ConfigOptions) {
+  public constructor(options?: AnonConfig) {
     this.options = options;
   };
 
@@ -22,7 +21,7 @@ export class Anon {
       throw new Error('Anon process already started');
     }
 
-    const configPath = await createConfigFile(this.options);
+    const configPath = await createAnonConfigFile(this.options);
     this.process = this.runBinary('anon', configPath, () => this.onStop());
   }
 
@@ -48,13 +47,7 @@ export class Anon {
   }
 
   private runBinary(name: string, configPath?: string, onStop?: VoidFunction): ChildProcess {
-    const platform = os.platform();
-    const arch = os.arch();
-
-    let binaryPath = path.join(__dirname, '..', 'bin', platform, arch, name);
-    if (platform === 'win32') {
-      binaryPath += '.exe';
-    }
+    const binaryPath = getBinaryPath(name);
 
     let args: Array<string> = [];
     if (configPath !== undefined) {
@@ -90,5 +83,3 @@ export class Anon {
     return child;
   }
 }
-
-

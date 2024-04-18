@@ -1,12 +1,17 @@
 import { ChildProcess, spawn } from 'child_process';
-import * as os from 'os';
-import path from 'path';
+import { AnonProxyConfig, createAnonProxyConfigFile } from './config/config';
+import { getBinaryPath } from './utils';
 
 /**
  * Allows to run Anon Proxy with different configuration options
  */
 export class AnonProxy {
+  private options?: AnonProxyConfig;
   private process?: ChildProcess;
+
+  public constructor(options?: AnonProxyConfig) {
+    this.options = options;
+  };
 
   /**
    * Starts Anon Proxy
@@ -16,7 +21,8 @@ export class AnonProxy {
       throw new Error('Anon process already started');
     }
 
-    this.process = this.runBinary('anon-proxy', args, () => this.onStop());
+    const configPath = await createAnonProxyConfigFile(this.options);
+    this.process = this.runBinary('anon-proxy', args, configPath, () => this.onStop());
   }
 
   /**
@@ -40,23 +46,22 @@ export class AnonProxy {
     this.process = undefined;
   }
 
-  private runBinary(name: string, args: string[], onStop?: VoidFunction): ChildProcess {
-    const platform = os.platform();
-    const arch = os.arch();
+  private runBinary(name: string, args: string[], configPath?: string, onStop?: VoidFunction): ChildProcess {
+    const binaryPath = getBinaryPath(name);
 
-    let binaryPath = path.join(__dirname, '..', 'bin', platform, arch, name);
-    if (platform === 'win32') {
-      binaryPath += '.exe';
+    let proxyArgs: string[] = [];
+    if (configPath !== undefined) {
+      proxyArgs = ['-f', configPath]
     }
 
-    const child = spawn(binaryPath, args, { detached: false });
+    const child = spawn(binaryPath, proxyArgs.concat(args), { detached: false });
 
     child.stdout.on('data', (data) => {
-        console.log(`${data}`);
+      console.log(`${data}`);
     });
 
     child.stderr.on('data', (data) => {
-        console.log(`${data}`);
+      console.log(`${data}`);
     });
 
     child.on('close', (code) => {
@@ -74,5 +79,3 @@ export class AnonProxy {
     return child;
   }
 }
-
-
