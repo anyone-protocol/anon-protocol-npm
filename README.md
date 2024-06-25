@@ -31,9 +31,10 @@ const socksPort = 9050;
 const anon = new Anon({ socksPort });
 
 // Set up axios to use Anon
-const proxyOptions = `socks5://127.0.0.1:${socksPort}`;
-const httpsAgent = new SocksProxyAgent(proxyOptions);
-const client = axios.create({ httpsAgent });
+const proxyOptions = `socks5h://127.0.0.1:${socksPort}`;
+const httpAgent = new SocksProxyAgent(proxyOptions);
+const httpsAgent = httpAgent;
+const client = axios.create({ httpAgent, httpsAgent });
 
 (async () => {
   // Start Anon client
