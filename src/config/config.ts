@@ -6,6 +6,9 @@ export interface AnonConfig {
   /* Enables logging when set to true */
   displayLog?: boolean;
 
+  /* Enables option to use execFile() instead of spawn() to start anon */
+  useExecFile?: boolean;
+
   /* Sets SOCKS5 port of the client */
   socksPort?: number;
 

@@ -1,4 +1,4 @@
-import { ChildProcess, spawn } from 'child_process';
+import { ChildProcess, spawn, execFile } from 'child_process';
 import { AnonConfig, createAnonConfigFile } from './config/config';
 import { getBinaryPath } from './utils';
 
@@ -54,6 +54,24 @@ export class Anon {
       args = ['-f', configPath]
     }
 
+    if (this.options?.useExecFile === true) {
+      const child = execFile(binaryPath, args);
+
+      child.on('close', () => {
+        if (onStop !== undefined) {
+          onStop();
+        }
+      });
+
+      child.on('exit', () => {
+        if (onStop !== undefined) {
+          onStop();
+        }
+      });
+
+      return child;
+    }
+
     const child = spawn(binaryPath, args, { detached: false });
 
     child.stdout.on('data', (data) => {
@@ -68,13 +86,13 @@ export class Anon {
       }
     });
 
-    child.on('close', (code) => {
+    child.on('close', () => {
       if (onStop !== undefined) {
         onStop();
       }
     });
 
-    child.on('exit', (code) => {
+    child.on('exit', () => {
       if (onStop !== undefined) {
         onStop();
       }
