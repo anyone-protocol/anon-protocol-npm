@@ -27,6 +27,7 @@ export async function createAnonConfigFile(options?: AnonConfig): Promise<string
   const orPort = options?.orPort ?? 0;
 
   let configItems = [
+    `AgreeToTerms 1`,
     `DataDirectory ${tempDataDirPath}`,
     `SOCKSPort ${socksPort}`,
     `ORPort ${orPort}`,

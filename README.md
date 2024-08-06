@@ -12,6 +12,12 @@ npm install anon-protocol
 npx anon-protocol
 ```
 
+## Run Anon Proxy (Example Usage)
+
+```sh
+npx anon-proxy curl icanhazip.com
+```
+
 ## Build
 
 ```sh
