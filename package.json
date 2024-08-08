@@ -1,11 +1,11 @@
 {
-  "name": "anon-protocol",
+  "name": "@anyone-protocol/anyone-client",
   "version": "0.2.1",
   "description": "",
   "main": "out/index.js",
   "bin": {
-    "anon-protocol": "./out/anon-cli.js",
-    "anon-proxy": "./out/anon-proxy-cli.js"
+    "anyone-client": "./out/anon-cli.js",
+    "anyone-proxy": "./out/anon-proxy-cli.js"
   },
   "scripts": {
     "build": "tsc",

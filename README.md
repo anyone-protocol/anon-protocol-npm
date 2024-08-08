@@ -3,7 +3,7 @@
 ## Install
 
 ```sh
-npm install anon-protocol
+npm install @anyone-protocol/anyone-client
 ```
 
 ## Run Anon Client
@@ -27,7 +27,7 @@ npm run build
 ## Usage Example (Typescript)
 
 ```typescript
-import { Anon } from 'anon-protocol';
+import { Anon } from '@anyone-protocol/anyone-client';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import axios from 'axios';
 
