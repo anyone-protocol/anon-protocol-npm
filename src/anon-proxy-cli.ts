@@ -1,15 +1,40 @@
 #!/usr/bin/env node
 
-import { AnonProxy } from "./anon-proxy";
+import { AnonProxy } from './anon-proxy';
 
-const anonProxy = new AnonProxy();
+function parseArgs(): { socksPort?: number, args: string[] } {
+  const args = process.argv.slice(2);
+  let socksPort: number | undefined;
+  const parsedArgs: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--socks-port' && args[i + 1]) {
+      socksPort = parseInt(args[i + 1], 10);
+      if (isNaN(socksPort)) {
+        throw new Error('Invalid SOCKS port value');
+      }
+      i++;
+    } else {
+      parsedArgs.push(args[i]);
+    }
+  }
+
+  return { socksPort, args: parsedArgs };
+}
+
+const { socksPort, args } = parseArgs();
+
+const anonProxy = new AnonProxy({ socksPort });
 
 (async () => {
-  await anonProxy.start(process.argv.slice(2));
+  await anonProxy.start(args);
 })();
 
 function gracefulShutdown() {
-  anonProxy.stop();
+  if (anonProxy.isRunning()) {
+    anonProxy.stop();
+  }
+  process.exit(0);
 }
 
 process.on('SIGTERM', gracefulShutdown);
