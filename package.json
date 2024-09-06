@@ -18,7 +18,7 @@
   "author": "",
   "license": "BSD-3-Clause",
   "devDependencies": {
-    "@types/node": "^20.12.2",
+    "@types/node": "^20.16.5",
     "@types/unzipper": "^0.10.9",
     "typedoc": "^0.25.13",
     "typescript": "^5.4.3"

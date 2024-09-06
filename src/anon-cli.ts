@@ -11,8 +11,12 @@ const args = parseArgs({
     },
     orPort: {
       type: 'string',
-      short: 's',
+      short: 'o',
     },
+    controlPort: {
+      type: 'string',
+      short: 'c',
+    }
   }
 });
 
@@ -32,7 +36,15 @@ if (args.values.orPort !== undefined) {
   }
 }
 
-const anon = new Anon({ displayLog: true, socksPort: socksPort, orPort: orPort });
+let controlPort: number | undefined = undefined;
+if (args.values.controlPort !== undefined) {
+  const value = parseInt(args.values.controlPort);
+  if (isFinite(value)) {
+    controlPort = value;
+  }
+}
+
+const anon = new Anon({ displayLog: true, socksPort: socksPort, orPort: orPort, controlPort: controlPort });
 
 (async () => {
   await anon.start();

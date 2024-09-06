@@ -14,6 +14,9 @@ export interface AnonConfig {
 
   /* Sets OR port of the relay */
   orPort?: number;
+
+  /* Sets control port of the relay */
+  controlPort?: number;
 }
 
 export async function createAnonConfigFile(options?: AnonConfig): Promise<string> {
@@ -23,13 +26,15 @@ export async function createAnonConfigFile(options?: AnonConfig): Promise<string
   const tempDataDirName = `anon-data-${Date.now()}`;
   const tempDataDirPath = path.join(os.tmpdir(), tempDataDirName);
 
-  const socksPort = options?.socksPort ?? 0;
-  const orPort = options?.orPort ?? 0;
+  const socksPort = options?.socksPort ?? 9050;
+  const orPort = options?.orPort ?? 9001;
+  const controlPort = options?.controlPort ?? 9051;
 
   let configItems = [
     `DataDirectory ${tempDataDirPath}`,
     `SOCKSPort ${socksPort}`,
     `ORPort ${orPort}`,
+    `ControlPort ${controlPort}`,
   ];
 
   const configData = configItems.join("\n");
@@ -40,9 +45,6 @@ export async function createAnonConfigFile(options?: AnonConfig): Promise<string
 }
 
 export interface AnonProxyConfig {
-  /* Enables logging when set to true */
-  displayLog?: boolean;
-
   /* Sets SOCKS5 port of the client */
   socksPort?: number;
 }
