@@ -1,3 +1,7 @@
+/**
+ * THIS FEATURE IS EXPERIMENTAL AND IN BETA, USE AT YOUR OWN RISK
+ */
+
 import { ChildProcess, spawn } from 'child_process';
 import { AnonProxyConfig, createAnonProxyConfigFile } from './config/config';
 import { getBinaryPath } from './utils';
