@@ -17,9 +17,9 @@ const args = parseArgs({
       type: 'string',
       short: 'c',
     },
-    debug: {
+    verbose: {
       type: 'boolean',
-      short: 'd',
+      short: 'v',
     }
   }
 });
@@ -48,9 +48,9 @@ if (args.values.controlPort !== undefined) {
   }
 }
 
-const debug = args.values.debug === true;
+const verbose = args.values.verbose === true;
 
-const anon = new Anon({ displayLog: debug, socksPort: socksPort, orPort: orPort, controlPort: controlPort });
+const anon = new Anon({ displayLog: verbose, socksPort: socksPort, orPort: orPort, controlPort: controlPort });
 
 (async () => {
   await anon.start();
