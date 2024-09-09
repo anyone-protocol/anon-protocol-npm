@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+/**
+ * THIS FEATURE IS EXPERIMENTAL AND IN BETA, USE AT YOUR OWN RISK
+ */
+
 import { AnonProxy } from './anon-proxy';
 
 function parseArgs(): { socksPort?: number, args: string[] } {

@@ -12,12 +12,6 @@ npm install @anyone-protocol/anyone-client
 npx anyone-client
 ```
 
-## Run Anon Proxy (Example Usage)
-
-```sh
-npx anyone-proxy curl icanhazip.com
-```
-
 ## Build
 
 ```sh

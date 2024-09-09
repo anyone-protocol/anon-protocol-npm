@@ -1,6 +1,7 @@
 import { ChildProcess, spawn, execFile } from 'child_process';
 import { AnonConfig, createAnonConfigFile } from './config/config';
 import { getBinaryPath } from './utils';
+import chalk from 'chalk';
 
 /**
  * Allows to run Anon client with different configuration options
@@ -75,8 +76,22 @@ export class Anon {
     const child = spawn(binaryPath, args, { detached: false });
 
     child.stdout.on('data', (data) => {
-      if (this.options?.displayLog === true) {
-        console.log(`${data}`);
+      const logLines = data.toString().split('\n');
+    
+      for (const line of logLines) {
+        if (this.options?.displayLog === true) {
+          console.log(line);
+        } else {
+          const bootstrapMatch = line.match(/Bootstrapped (\d+)%.*?: (.+)/);
+          if (bootstrapMatch) {
+            const [, percentage, status] = bootstrapMatch;
+            const formattedPercentage = chalk.green(`${percentage}%`);
+            const formattedStatus = chalk.blue(status);
+            console.log(`Bootstrapped ${formattedPercentage}: ${formattedStatus}`);
+          } else if (line.match(/\[err\]/i)) {
+            console.log(chalk.red(line));
+          }
+        }
       }
     });
 
