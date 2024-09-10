@@ -1,4 +1,8 @@
-# Anon Protocol NPM Package
+# Anyone Protocol NPM Package
+
+![npm](https://img.shields.io/npm/v/@anyone-protocol/anyone-client.svg)
+
+The official NPM package for the Anyone Protocol. It is a client that can be used to interact with the Anyone Protocol and the ecosystem. Circuits are created through the network that are used to tunnel application or personal traffic to an end destination anonymously.
 
 ## Install
 
@@ -17,59 +21,31 @@ npx anyone-client
 ```sh
 npm run build
 ```
+## CLI Options
 
-## Usage Example (Typescript)
+Running `npx anyone-client`, will start the client with the following default ports:
 
-```typescript
-import { Anon } from '@anyone-protocol/anyone-client';
-import { SocksProxyAgent } from 'socks-proxy-agent';
-import axios from 'axios';
+- SocksPort: 9050
+- ControlPort: 9051
+- OrPort: 9001
 
-const socksPort = 9050;
+You can customize the port settings using command-line options:
 
-// Create Anon client
-const anon = new Anon({ socksPort });
+- -s: Set the SocksPort (default: 9050)
+- -c: Set the ControlPort (default: 9051, use 0 to disable)
+- -o: Set the OrPort (default: 9001)
+- -v: Enable verbose mode for full client logs
 
-// Set up axios to use Anon
-const proxyOptions = `socks5h://127.0.0.1:${socksPort}`;
-const httpAgent = new SocksProxyAgent(proxyOptions);
-const httpsAgent = httpAgent;
-const client = axios.create({ httpAgent, httpsAgent });
+### Example:
 
-(async () => {
-  // Start Anon client
-  await anon.start();
-
-  // Make a HTTP request to API
-  const resp = await axios.get('https://api.ipify.org?format=json');
-
-  // Make a HTTP request to API using Anon
-  const anonResp = await client.get('https://api.ipify.org?format=json');
-
-  // Log responses
-  console.log(`Real IP: ${resp.data.ip}`);
-  console.log(`Anon IP: ${anonResp.data.ip}`);
-
-  // Stop Anon client
-  await anon.stop();
-})();
-
-function shutdown() {
-  anon.stop();
-  process.exit(0);
-}
-
-// Graceful shutdown
-process.once('SIGINT', shutdown);
-process.once('SIGTERM', shutdown);
+```sh
+npx anyone-client -s 9150 -c 0 -o 9101 -v
 ```
 
-Response should look like:
+This command will run the client with the SocksPort set to 9150, ControlPort disabled, OrPort set to 9101 and verbose mode enabled.
 
-```
-Real IP: 94.16.115.212
-Anon IP: 89.58.10.128
-```
+When changing ports, ensure they don't conflict with other services on your system.
+
 
 ## Docs
 
