@@ -14,6 +14,18 @@ export class Anon {
     this.options = options;
   };
 
+  public getSOCKSPort(): number | undefined {
+    return this.options?.socksPort;
+  }
+
+  public getControlPort(): number | undefined {
+    return this.options?.controlPort;
+  }
+
+  public getORPort(): number | undefined {
+    return this.options?.orPort;
+  }
+  
   /**
    * Starts Anon client with options configured in constructor
    */
