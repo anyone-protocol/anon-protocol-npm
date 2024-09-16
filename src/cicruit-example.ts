@@ -1,106 +1,149 @@
 import * as net from 'net';
 
-// Function to connect to the control port and send commands
-function connectToControlPort(password: string, host = '127.0.0.1', port = 9051): Promise<net.Socket> {
-    return new Promise((resolve, reject) => {
-        const client = net.createConnection({ host, port }, () => {
-            console.log('Connected to Tor Control Port');
-            // Send the AUTHENTICATE command with the control port password
-            client.write(`AUTHENTICATE "${password}"\r\n`);
+export class AnonControlClient {
+    private client: net.Socket;
+
+    constructor(host = '127.0.0.1', port = 9051) {
+        console.log('Connecting to Anon Control Port at', host, port);
+        
+        this.client = net.createConnection({ host, port }, () => {
+            console.log('Connected to Anon Control Port');
         });
+    }
 
-        client.on('data', (data: Buffer) => {
-            const response = data.toString();
-            console.log('Control port response:', response);
+    authenticate(password: string = 'password'): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            this.client.write(`AUTHENTICATE "${password}"\r\n`);
 
-            if (response.startsWith('250 OK')) {
-                console.log('Authenticated successfully');
-                resolve(client);
-            } else if (response.startsWith('515')) {
-                console.error('Authentication failed');
-                client.end();
-                reject('Authentication failed');
-            }
+            this.client.once('data', (data: Buffer) => {
+                const response = data.toString();
+                console.log('Control port response:', response);
+
+                if (response.startsWith('250 OK')) {
+                    console.log('Authenticated successfully');
+                    resolve();
+                } else if (response.startsWith('515')) {
+                    console.error('Authentication failed');
+                    this.client.end();
+                    reject('Authentication failed');
+                }
+            });
+
+            this.client.on('error', (err: Error) => {
+                console.error('Control port error:', err);
+                reject(err);
+            });
         });
+    }
 
-        client.on('error', (err: Error) => {
-            console.error('Control port error:', err);
-            reject(err);
+    async sendCommand(command: string): Promise<string> {
+        return new Promise<string>((resolve, reject) => {
+            this.client.write(`${command}\r\n`);
+
+            this.client.once('data', (data: Buffer) => {
+                const response = data.toString();
+                console.log(`Response for "${command}":`, response);
+                resolve(response);
+            });
+
+            this.client.on('error', (err: Error) => {
+                reject(err);
+            });
         });
+    }
 
-        client.on('end', () => {
-            console.log('Disconnected from control port');
-        });
-    });
-}
+    async circuitStatus(): Promise<string> {
+        return this.sendCommand('GETINFO circuit-status');
+    }
 
-// Function to send a command to the control port
-function sendCommand(client: net.Socket, command: string) {
-    return new Promise<void>((resolve, reject) => {
-        client.write(`${command}\r\n`);
-
-        client.on('data', (data: Buffer) => {
-            const response = data.toString();
-            console.log(`Response for "${command}":`, response);
-            if (response.startsWith('250')) {
-                const circuits = parseCircuitStatus(response);
-                console.log(circuits);
-                resolve();
-            } else {
-                reject(`Error response: ${response}`);
-            }
-        });
-    });
-}
-
-// Example usage: connect and fetch circuit status
-async function main() {
-    const controlPortPassword = 'password'; // Change to your control port password
-
-    try {
-        const client = await connectToControlPort(controlPortPassword);
-
-        // Send GETINFO circuit-status command to the control port
-        await sendCommand(client, 'GETINFO circuit-status');
-
-        // You can add more commands or close the connection
-        client.end(); // Close the connection when you're done
-    } catch (error) {
-        console.error('Error:', error);
+    end() {
+        this.client.end();
     }
 }
 
-interface Circuit {
-    parts: string[];
+interface CircuitStatus {
+    circuitId: number;
+    state: string;
+    relays: Relay[];
+    buildFlags: string[];
+    purpose: string;
+    timeCreated: Date;
 }
 
-function parseCircuitStatus(circuitStatusResponse: string): Circuit[] {
-    const circuits: Circuit[] = [];
-    const lines = circuitStatusResponse.split('\n');
+interface Relay {
+    fingerprint: string;
+    nickname: string;
+}
+
+function parseCircuitStatus(circuitStatusResponse: string): CircuitStatus[] {
+    if (!circuitStatusResponse.startsWith('250+circuit-status=')) {
+        throw new Error('Invalid response format');
+    }
+
+    const cleanedResponse = circuitStatusResponse
+        .replace(/^250\+circuit-status=/, '')
+        .replace(/250 OK$/, '')
+
+    const circuits: CircuitStatus[] = [];
+    const lines = cleanedResponse.split('\n').filter(line => line.trim() !== '');
 
     for (const line of lines) {
         const trimmedLine = line.trim();
-        if (trimmedLine === '') {
-            // Skip empty lines
+        const parts = trimmedLine.split(' ');
+
+        if (parts.length < 4 || isNaN(parseInt(parts[0], 10))) {
             continue;
         }
 
-        // Match lines starting with a number followed by "BUILT"
-        const match = /^(\d+) BUILT\s+(.+)$/.exec(trimmedLine);
-        if (match) {
-            const parts = line.split(' ');
-
-            // Create the Circuit object with the number included
-            const circuit: Circuit = {
-                parts
+        const state = parts[1];
+        const circuitId = parseInt(parts[0], 10);
+        const relaysPart = parts[2].split(',');
+        const relays: Relay[] = relaysPart.map(relay => {
+            const [fingerprint, nickname] = relay.split('~');
+            return {
+                fingerprint: fingerprint.replace(/^\$/, ''),
+                nickname: nickname
             };
+        });
 
-            // Add to the circuits array
-            circuits.push(circuit);
-        }
+        const buildFlags = parts.find(part => part.startsWith('BUILD_FLAGS='))
+            ?.split('=')[1]?.split(',') || [];
+        const purpose = parts.find(part => part.startsWith('PURPOSE='))
+            ?.split('=')[1] || '';
+        const timeCreated = new Date(parts.find(part => part.startsWith('TIME_CREATED='))
+            ?.split('=')[1] || '');
+
+        const circuit: CircuitStatus = {
+            circuitId,
+            state,
+            relays,
+            buildFlags,
+            purpose,
+            timeCreated
+        };
+
+        circuits.push(circuit);
     }
 
     return circuits;
+}
+
+async function main() {
+    try {
+        const anonControlClient = new AnonControlClient();
+
+        await anonControlClient.authenticate();
+
+        const response = await anonControlClient.circuitStatus();
+
+        const circuits = parseCircuitStatus(response);
+        
+        console.log(JSON.stringify(circuits, null, 2));
+
+        anonControlClient.end();
+    } catch (error) {
+        console.error('Error:', error);
+    }
 }
 
 main();
