@@ -2,6 +2,9 @@
 
 import { parseArgs } from "util";
 import { Anon } from "./anon";
+import { AnonConfig } from "./config/config";
+
+
 
 const args = parseArgs({
   options: {
@@ -24,33 +27,29 @@ const args = parseArgs({
   }
 });
 
-let socksPort: number | undefined = undefined;
-if (args.values.socksPort !== undefined) {
-  const value = parseInt(args.values.socksPort);
-  if (isFinite(value)) {
-    socksPort = value;
-  }
+const anonConfig: AnonConfig = {
+  displayLog: args.values.verbose === true,
+  socksPort: 9050,
+  orPort: 9001,
+  controlPort: 9051
+};
+
+function parsePort(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = parseInt(value, 10);
+  return isFinite(parsed) ? parsed : undefined;
 }
 
-let orPort: number | undefined = undefined;
-if (args.values.orPort !== undefined) {
-  const value = parseInt(args.values.orPort);
-  if (isFinite(value)) {
-    orPort = value;
-  }
-}
+const socksPort = parsePort(args.values.socksPort);
+if (socksPort !== undefined) anonConfig.socksPort = socksPort;
 
-let controlPort: number | undefined = undefined;
-if (args.values.controlPort !== undefined) {
-  const value = parseInt(args.values.controlPort);
-  if (isFinite(value)) {
-    controlPort = value;
-  }
-}
+const orPort = parsePort(args.values.orPort);
+if (orPort !== undefined) anonConfig.orPort = orPort;
 
-const verbose = args.values.verbose === true;
+const controlPort = parsePort(args.values.controlPort);
+if (controlPort !== undefined) anonConfig.controlPort = controlPort;
 
-const anon = new Anon({ displayLog: verbose, socksPort: socksPort, orPort: orPort, controlPort: controlPort });
+const anon = new Anon(anonConfig);
 
 (async () => {
   await anon.start();
