@@ -42,7 +42,6 @@ export class AnonControlClient {
 
             this.client.once('data', (data: Buffer) => {
                 const response = data.toString();
-                console.log(`Response for "${command}":`, response);
                 resolve(response);
             });
 
@@ -54,6 +53,26 @@ export class AnonControlClient {
 
     async circuitStatus(): Promise<string> {
         return this.sendCommand('GETINFO circuit-status');
+    }
+
+    async extendCircuit(options: ExtendCircuitOptions = {}): Promise<string> {
+        // Set default values
+        const circuitId = options.circuitId ?? 0;
+        const serverSpecs = options.serverSpecs ?? [];
+        const purpose = options.purpose ?? 'general';
+
+        // Construct the command
+        let command = `EXTENDCIRCUIT ${circuitId}`;
+
+        if (serverSpecs.length > 0) {
+            command += ` ${serverSpecs.join(',')}`;
+        }
+
+        if (purpose) {
+            command += ` purpose=${purpose}`;
+        }
+
+        return this.sendCommand(`${command} CRLF`);
     }
 
     end() {
@@ -73,6 +92,14 @@ interface CircuitStatus {
 interface Relay {
     fingerprint: string;
     nickname: string;
+}
+
+type Purpose = 'general' | 'controller';
+
+interface ExtendCircuitOptions {
+  circuitId?: number;
+  serverSpecs?: string[];
+  purpose?: Purpose;
 }
 
 function parseCircuitStatus(circuitStatusResponse: string): CircuitStatus[] {
@@ -111,7 +138,7 @@ function parseCircuitStatus(circuitStatusResponse: string): CircuitStatus[] {
         const purpose = parts.find(part => part.startsWith('PURPOSE='))
             ?.split('=')[1] || '';
         const timeCreated = new Date(parts.find(part => part.startsWith('TIME_CREATED='))
-            ?.split('=')[1] || '');
+            ?.split('=')[1]+'Z' || ''); // Add Z to make it ISO 8601 compliant
 
         const circuit: CircuitStatus = {
             circuitId,
@@ -130,15 +157,22 @@ function parseCircuitStatus(circuitStatusResponse: string): CircuitStatus[] {
 
 async function main() {
     try {
+        // connect and authenticate
         const anonControlClient = new AnonControlClient();
-
         await anonControlClient.authenticate();
 
+        // get circuit status
         const response = await anonControlClient.circuitStatus();
-
         const circuits = parseCircuitStatus(response);
-        
         console.log(JSON.stringify(circuits, null, 2));
+
+        // create new circuit with random servers
+        const resp2 = await anonControlClient.extendCircuit();
+        console.log('Extended circuit:', resp2);
+
+        // create new circuit with specific servers
+        const response3 = await anonControlClient.extendCircuit({ serverSpecs: ['A8315F95342E9B0F2B2DD7E929D45FA6383C84DA', 'E7B1769DA63DA3833A08EB6ACF2E910521EA3A9D', 'EF1345BA4D40D877C1F20C6A9C9ACB96E3911B65']});
+        console.log(response3);
 
         anonControlClient.end();
     } catch (error) {
