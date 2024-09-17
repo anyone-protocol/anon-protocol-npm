@@ -7,10 +7,11 @@ export class AnonSocksClient {
   private agent: SocksProxyAgent;
   public axios: AxiosInstance;
   private socksPort: number;
+  private host: string;
 
-  constructor(anon: Anon);
-  constructor(socksPort: number);
-  constructor(anonOrPort: Anon | number) {
+  constructor(anon: Anon, host?: string);
+  constructor(socksPort: number, host?: string);
+  constructor(anonOrPort: Anon | number, host: string = '127.0.0.1') {
     if (anonOrPort instanceof Anon) {
       this.anon = anonOrPort;
       this.socksPort = this.anon.getSOCKSPort();
@@ -19,7 +20,8 @@ export class AnonSocksClient {
     }
 
     if (this.socksPort === 0) {
-      throw new Error('Invalid SOCKS port: 0. SOCKS proxy must be enabled with a valid port number (1-65535).');
+      throw new Error('SOCKS port has value 0, and is therefore disabled.\n' +
+        'SOCKS proxy must be enabled with a valid port number (1-65535) to use the SOCKS client');
     }
     
     this.agent = this.createAgent();
@@ -27,10 +29,11 @@ export class AnonSocksClient {
       httpAgent: this.agent,
       httpsAgent: this.agent
     });
+    this.host = host;
   }
 
   private createAgent(): SocksProxyAgent {
-    return new SocksProxyAgent(`socks://127.0.0.1:${this.socksPort}`);
+    return new SocksProxyAgent(`socks://${this.host}:${this.socksPort}`);
   }
 
   public get<T = any>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {

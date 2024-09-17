@@ -11,13 +11,12 @@ export class Anon {
     displayLog: false,
     useExecFile: false,
     socksPort: 9050,
-    orPort: 9001,
+    orPort: 0,
     controlPort: 9051
   };
   private process?: ChildProcess;
 
   public constructor(options?: Partial<AnonConfig>) {
-
     this.options = { ...this.options, ...options };
   }
 
