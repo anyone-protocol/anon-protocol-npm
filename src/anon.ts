@@ -7,13 +7,31 @@ import chalk from 'chalk';
  * Allows to run Anon client with different configuration options
  */
 export class Anon {
-  private options?: AnonConfig;
+  private options: AnonConfig = {
+    displayLog: false,
+    useExecFile: false,
+    socksPort: 9050,
+    orPort: 0,
+    controlPort: 9051
+  };
   private process?: ChildProcess;
 
-  public constructor(options?: AnonConfig) {
-    this.options = options;
-  };
+  public constructor(options?: Partial<AnonConfig>) {
+    this.options = { ...this.options, ...options };
+  }
 
+  public getSOCKSPort(): number {
+    return this.options.socksPort;
+  }
+
+  public getControlPort(): number {
+    return this.options.controlPort;
+  }
+
+  public getORPort(): number {
+    return this.options.orPort;
+  }
+  
   /**
    * Starts Anon client with options configured in constructor
    */
