@@ -55,7 +55,8 @@ export class AnonControlClient {
     async circuitStatus(): Promise<CircuitStatus[]> {
         return this.sendCommand('GETINFO circuit-status').then(response => { 
 
-            if (!response.startsWith('250+circuit-status=')) {
+            if (!response.startsWith('250+circuit-status=') && !response.startsWith('250 OK')) {
+                console.error('Invalid response: ', response);
                 throw new Error('Invalid response format');
             }
         
@@ -124,11 +125,21 @@ export class AnonControlClient {
         }
 
         return this.sendCommand(`${command} CRLF`).then(response => {
-            if (!response.startsWith('250 EXTENDED')) {
+            if (!response.startsWith('250 EXTENDED') && !response.startsWith('250 OK')) {
+                console.error('Failed to extend circuit:', response);
                 throw new Error('Failed to extend circuit');
             }
             return parseInt(response.split(' ')[2], 10); // circuitId
         });
+    }
+
+    async closeCircuit(circuitId: number): Promise<void> {
+        const command = `CLOSECIRCUIT ${circuitId}`;
+        this.sendCommand(command).then(response => {
+            if (!response.startsWith('250')) {
+                throw new Error(`Failed to close circuit: ${response}`);    
+            }
+        });   
     }
 
     end() {

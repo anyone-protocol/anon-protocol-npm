@@ -12,6 +12,10 @@ async function main() {
         const availableCircuitsBefore = await anonControlClient.circuitStatus();
         console.log(JSON.stringify(availableCircuitsBefore, null, 2));
 
+        // close circuit by id
+        await anonControlClient.closeCircuit(availableCircuitsBefore[0].circuitId);
+        console.log('Closed circuit id:', availableCircuitsBefore[0].circuitId);
+
         // create new circuit with random servers
         const randomlyCreatedCircuitId = await anonControlClient.extendCircuit();
         console.log('Randomly created circuit id:', randomlyCreatedCircuitId);
