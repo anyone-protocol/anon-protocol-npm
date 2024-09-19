@@ -15,7 +15,7 @@ async function main() {
         const extendedCircuitId = await anonControlClient.extendCircuit(
             { 
                 circuitId: circuits[0].circuitId, 
-                serverSpecs: [circuits[1].relays[2].fingerprint]
+                serverSpecs: [circuits[1].relays[0].fingerprint]
             }
         );
         console.log('Extended circuit id:', extendedCircuitId);
