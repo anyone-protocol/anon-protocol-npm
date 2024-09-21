@@ -65,7 +65,7 @@ export class Anon {
     this.process = undefined;
   }
 
-  private runBinary(name: string, configPath?: string, onStop?: VoidFunction): ChildProcess {
+  private runBinary(name: string, configPath: string, onStop?: VoidFunction): ChildProcess {
     const binaryPath = getBinaryPath(name);
 
     let args: Array<string> = [];
