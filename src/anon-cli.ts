@@ -24,6 +24,10 @@ const args = parseArgs({
       type: 'boolean',
       short: 'v',
     },
+    config : {
+      type: 'string',
+      short: 'f',
+    },
     binaryPath: {
       type: 'string',
       short: 'b',
@@ -53,6 +57,9 @@ if (orPort !== undefined) anonConfig.orPort = orPort;
 
 const controlPort = parsePort(args.values.controlPort);
 if (controlPort !== undefined) anonConfig.controlPort = controlPort;
+
+const configFile = args.values.config;
+if (configFile !== undefined) anonConfig.configFile = configFile;
 
 const anon = new Anon(anonConfig);
 

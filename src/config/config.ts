@@ -19,31 +19,40 @@ export interface AnonConfig {
   /* Sets control port of the relay */
   controlPort: number;
 
+  /* Sets the path to the configuration file */
+  configFile?: string;
+
   /* Path to the binary */
   binaryPath?: string;
 }
 
 export async function createAnonConfigFile(options: AnonConfig): Promise<string> {
-  const tempAnonrcName = `anonrc-${Date.now()}`;
-  const tempAnonrcPath = path.join(os.tmpdir(), tempAnonrcName);
+  if (options.configFile) {
+    try {
+      await fs.access(options.configFile);
+      return options.configFile;
+    } catch {
+    }
+  }
 
+  const configPath = options.configFile ?? path.join(os.tmpdir(), `anonrc-${Date.now()}`);
   const tempDataDirName = `anon-data-${Date.now()}`;
   const tempDataDirPath = path.join(os.tmpdir(), tempDataDirName);
 
-  let configItems = [
+  const configItems = [
     `DataDirectory ${tempDataDirPath}`,
     `SOCKSPort ${options.socksPort}`,
     `ORPort ${options.orPort}`,
     `ControlPort ${options.controlPort}`,
   ];
 
-  const configData = configItems.join("\n");
-  await fs.writeFile(tempAnonrcPath, configData);
-  await fs.mkdir(tempDataDirPath)
+  await fs.writeFile(configPath, configItems.join('\n') + '\n');
+
+  await fs.mkdir(tempDataDirPath, { recursive: true });
 
   const termsAgreementFileName = 'terms-agreement';
   const target = path.join(process.cwd(), termsAgreementFileName);
-  
+
   if (fsbasic.existsSync(target)) {
     const link = path.join(tempDataDirPath, termsAgreementFileName);
     await fs.symlink(target, link, 'file').catch((err) => {
@@ -51,7 +60,7 @@ export async function createAnonConfigFile(options: AnonConfig): Promise<string>
     });
   }
 
-  return tempAnonrcPath;
+  return configPath;
 }
 
 export interface AnonProxyConfig {

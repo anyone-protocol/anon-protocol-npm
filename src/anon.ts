@@ -67,7 +67,7 @@ export class Anon {
     this.process = undefined;
   }
 
-  private runBinary(binaryPath: string, configPath?: string, onStop?: VoidFunction): ChildProcess {
+  private runBinary(binaryPath: string, configPath: string, onStop?: VoidFunction): ChildProcess {
     let args: Array<string> = [];
     if (configPath !== undefined) {
       args = ['-f', configPath]
