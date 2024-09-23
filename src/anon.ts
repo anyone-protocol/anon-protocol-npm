@@ -12,7 +12,8 @@ export class Anon {
     useExecFile: false,
     socksPort: 9050,
     orPort: 0,
-    controlPort: 9051
+    controlPort: 9051,
+    binaryPath: undefined,
   };
   private process?: ChildProcess;
 
@@ -41,7 +42,8 @@ export class Anon {
     }
 
     const configPath = await createAnonConfigFile(this.options);
-    this.process = this.runBinary('anon', configPath, () => this.onStop());
+    const binaryPath = this.options.binaryPath ?? getBinaryPath('anon');
+    this.process = this.runBinary(binaryPath, configPath, () => this.onStop());
   }
 
   /**
@@ -65,9 +67,7 @@ export class Anon {
     this.process = undefined;
   }
 
-  private runBinary(name: string, configPath?: string, onStop?: VoidFunction): ChildProcess {
-    const binaryPath = getBinaryPath(name);
-
+  private runBinary(binaryPath: string, configPath?: string, onStop?: VoidFunction): ChildProcess {
     let args: Array<string> = [];
     if (configPath !== undefined) {
       args = ['-f', configPath]
