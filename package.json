@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "typedoc": "typedoc",
-    "postinstall": "node ./out/postinstall.js",
+    "postinstall": "npm run build && node ./out/postinstall.js",
     "prepublish": "npm run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
