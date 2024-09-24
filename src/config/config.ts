@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import fsbasic from 'fs';
 import os from 'os';
 import path from 'path';
 
@@ -20,6 +21,9 @@ export interface AnonConfig {
 
   /* Sets the path to the configuration file */
   configFile?: string;
+
+  /* Path to the binary */
+  binaryPath?: string;
 }
 
 export async function createAnonConfigFile(options: AnonConfig): Promise<string> {
@@ -43,8 +47,18 @@ export async function createAnonConfigFile(options: AnonConfig): Promise<string>
   ];
 
   await fs.writeFile(configPath, configItems.join('\n') + '\n');
-  
+
   await fs.mkdir(tempDataDirPath, { recursive: true });
+
+  const termsAgreementFileName = 'terms-agreement';
+  const target = path.join(process.cwd(), termsAgreementFileName);
+
+  if (fsbasic.existsSync(target)) {
+    const link = path.join(tempDataDirPath, termsAgreementFileName);
+    await fs.symlink(target, link, 'file').catch((err) => {
+      console.error(`Error creating symlink: ${err}`);
+    });
+  }
 
   return configPath;
 }

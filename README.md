@@ -35,17 +35,21 @@ You can customize the port settings using command-line options:
 - -c: Set the ControlPort (default: 9051, use 0 to disable)
 - -o: Set the OrPort (default: 9001)
 - -v: Enable verbose mode for full client logs
+- -b: Set the path to custom anon binary (To use preinstalled one)
 
 ### Example:
 
 ```sh
-npx anyone-client -s 9150 -c 0 -o 9101 -v
+npx anyone-client -s 9150 -c 0 -o 9101 -b /usr/local/bin/anon -v 
 ```
 
-This command will run the client with the SocksPort set to 9150, ControlPort disabled, OrPort set to 9101 and verbose mode enabled.
+This command will run the client with the SocksPort set to 9150, ControlPort disabled, OrPort set to 9101, binary path set to '/usr/local/bin/anon' and verbose mode enabled.
 
 When changing ports, ensure they don't conflict with other services on your system.
 
+### Terms and agreements
+
+In order to bypass user agreement automatically file with name 'terms-agreement' should be placed in the working directory. File should contain 'agreed' line to be valid.
 
 ## Docs
 

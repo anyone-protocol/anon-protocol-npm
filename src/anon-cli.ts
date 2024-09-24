@@ -27,6 +27,10 @@ const args = parseArgs({
     config : {
       type: 'string',
       short: 'f',
+    },
+    binaryPath: {
+      type: 'string',
+      short: 'b',
     }
   }
 });
@@ -35,7 +39,8 @@ const anonConfig: AnonConfig = {
   displayLog: args.values.verbose === true,
   socksPort: 9050,
   orPort: 9001,
-  controlPort: 9051
+  controlPort: 9051,
+  binaryPath: args.values.binaryPath,
 };
 
 function parsePort(value: string | undefined): number | undefined {
