@@ -35,15 +35,16 @@ You can customize the port settings using command-line options:
 - -c: Set the ControlPort (default: 9051, use 0 to disable)
 - -o: Set the OrPort (default: 9001)
 - -v: Enable verbose mode for full client logs
+- -f: Set the path to custom anonrc config file
 - -b: Set the path to custom anon binary (To use preinstalled one)
 
 ### Example:
 
 ```sh
-npx anyone-client -s 9150 -c 0 -o 9101 -b /usr/local/bin/anon -v 
+npx anyone-client -s 9150 -c 0 -o 9101 -f ./customAnonrc -b /usr/local/bin/anon -v 
 ```
 
-This command will run the client with the SocksPort set to 9150, ControlPort disabled, OrPort set to 9101, binary path set to '/usr/local/bin/anon' and verbose mode enabled.
+This command will run the client with the SocksPort set to 9150, ControlPort disabled, OrPort set to 9101, a anonrc file set to './customAnonrc', a binary path set to '/usr/local/bin/anon' and verbose mode enabled.
 
 When changing ports, ensure they don't conflict with other services on your system.
 
@@ -60,3 +61,11 @@ npm run typedoc
 ```
 
 Docs will be generated to `docs/` directory, open `index.html` to view it
+
+## Additional Information
+
+For more comprehensive information about the Anyone Protocol SDK, please visit our official documentation at:
+
+https://docs.anyone.io/sdk
+
+This resource provides in-depth guides, tutorials, and reference materials to help you make the most of the Anyone Protocol in your projects.

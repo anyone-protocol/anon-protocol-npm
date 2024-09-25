@@ -21,14 +21,29 @@ export class Anon {
     this.options = { ...this.options, ...options };
   }
 
-  public getSOCKSPort(): number {
+   /**
+   * Retrieves the SOCKS port number configured for the Anon instance.
+   * 
+   * @returns {number} The SOCKS port number.
+   */
+   public getSOCKSPort(): number {
     return this.options.socksPort;
   }
 
+  /**
+   * Retrieves the Control port number configured for the Anon instance.
+   * 
+   * @returns {number} The Control port number.
+   */
   public getControlPort(): number {
     return this.options.controlPort;
   }
 
+  /**
+   * Retrieves the OR (Onion Routing) port number configured for the Anon instance.
+   * 
+   * @returns {number} The OR port number.
+   */
   public getORPort(): number {
     return this.options.orPort;
   }

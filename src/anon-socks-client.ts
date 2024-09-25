@@ -15,6 +15,7 @@ export class AnonSocksClient {
     if (anonOrPort instanceof Anon) {
       this.anon = anonOrPort;
       this.socksPort = this.anon.getSOCKSPort();
+      console.log('host:', host);
     } else {
       this.socksPort = anonOrPort;
     }
@@ -24,34 +25,67 @@ export class AnonSocksClient {
         'SOCKS proxy must be enabled with a valid port number (1-65535) to use the SOCKS client');
     }
     
+    this.host = host;
     this.agent = this.createAgent();
     this.axios = axios.create({
       httpAgent: this.agent,
       httpsAgent: this.agent
     });
-    this.host = host;
   }
 
   private createAgent(): SocksProxyAgent {
     return new SocksProxyAgent(`socks://${this.host}:${this.socksPort}`);
   }
 
+  /**
+   * Sends a GET request to the specified URL through the Anon network.
+   * @param {string} url - The URL to send the GET request to.
+   * @param {AxiosRequestConfig} [config] - Optional Axios request configuration.
+   * @returns {Promise<AxiosResponse<T>>} A promise that resolves with the response data.
+   */
   public get<T = any>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
     return this.axios.get(url, config);
   }
 
+  /**
+   * Sends a POST request to the specified URL through the Anon network.
+   * @param {string} url - The URL to send the POST request to.
+   * @param {any} [data] - The data to be sent as the request body.
+   * @param {AxiosRequestConfig} [config] - Optional Axios request configuration.
+   * @returns {Promise<AxiosResponse<T>>} A promise that resolves with the response data.
+   */
   public post<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
     return this.axios.post(url, data, config);
   }
 
+  /**
+   * Sends a PUT request to the specified URL through the Anon network.
+   * @param {string} url - The URL to send the PUT request to.
+   * @param {any} [data] - The data to be sent as the request body.
+   * @param {AxiosRequestConfig} [config] - Optional Axios request configuration.
+   * @returns {Promise<AxiosResponse<T>>} A promise that resolves with the response data.
+   */
   public put<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
     return this.axios.put(url, data, config);
   }
 
+  /**
+   * Sends a DELETE request to the specified URL through the Anon network.
+   * @param {string} url - The URL to send the DELETE request to.
+   * @param {AxiosRequestConfig} [config] - Optional Axios request configuration.
+   * @returns {Promise<AxiosResponse<T>>} A promise that resolves with the response data.
+   */
   public delete<T = any>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
     return this.axios.delete(url, config);
   }
 
+  /**
+   * Sends a PATCH request to the specified URL through the Anon network.
+   * @param {string} url - The URL to send the PATCH request to.
+   * @param {any} [data] - The data to be sent as the request body.
+   * @param {AxiosRequestConfig} [config] - Optional Axios request configuration.
+   * @returns {Promise<AxiosResponse<T>>} A promise that resolves with the response data.
+   */
   public patch<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
     return this.axios.patch(url, data, config);
   }
