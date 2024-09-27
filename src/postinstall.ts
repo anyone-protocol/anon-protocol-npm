@@ -11,6 +11,7 @@ import { getBinaryDir } from './utils';
 const owner = 'anyone-protocol';
 const repo = 'ator-protocol'
 const version = 'v0.4.9.6';
+const releaseUrl = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${version}`;
 
 interface Asset {
   name: string;
@@ -32,28 +33,6 @@ const archMap: { [name: string]: string } = {
   'x64': 'amd64',
 };
 
-
-const getLatestVersion = async (owner: string, repo: string): Promise<string> => {
-  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/tags`);
-  const tags = await response.json();
-  
-  const versionRegex = /^v\d+\.\d+\.\d+\.\d+$/;
-  
-  const versionTags = tags
-    .map((tag: { name: string }) => tag.name)
-    .filter((name: string) => versionRegex.test(name))
-    .sort((a: string, b: string) => {
-      const [aMajor, aMinor, aPatch, aBuild] = a.slice(1).split('.').map(Number);
-      const [bMajor, bMinor, bPatch, bBuild] = b.slice(1).split('.').map(Number);
-      
-      if (aMajor !== bMajor) return bMajor - aMajor;
-      if (aMinor !== bMinor) return bMinor - aMinor;
-      if (aPatch !== bPatch) return bPatch - aPatch;
-      return bBuild - aBuild;
-    });
-
-  return versionTags[0] || '';
-}
 
 const downloadFile = async (url: string, outputPath: string) => {
   try {
@@ -115,9 +94,6 @@ const makeExecutable = (file: string) => {
 };
 
 (async () => {
-  const latestVersion = await getLatestVersion(owner, repo);
-  console.log(`Latest version: ${latestVersion}`);
-  const releaseUrl = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${latestVersion}`
 
   const resp: AxiosResponse<Release> = await axios.get<Release>(releaseUrl);
 

@@ -116,6 +116,8 @@ export class Anon {
           console.log(line);
         } else {
           const bootstrapMatch = line.match(/Bootstrapped (\d+)%.*?: (.+)/);
+          const versionMatch = line.match(/Anon (\d+\.\d+\.\d+[\w.-]+) .* running on/);
+          
           if (bootstrapMatch) {
             const [, percentage, status] = bootstrapMatch;
             const formattedPercentage = chalk.green(`${percentage}%`);
@@ -123,6 +125,9 @@ export class Anon {
             console.log(`Bootstrapped ${formattedPercentage}: ${formattedStatus}`);
           } else if (line.match(/\[err\]/i)) {
             console.log(chalk.red(line));
+          } else if (versionMatch) {
+            const [, version] = versionMatch;
+            console.log(chalk.yellow(`Running Anon version ${version} `));
           }
         }
       }
