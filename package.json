@@ -16,6 +16,10 @@
   "keywords": [],
   "author": "",
   "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anyone-protocol/anon-protocol-npm"
+  },
   "devDependencies": {
     "typedoc": "^0.25.13"
   },
