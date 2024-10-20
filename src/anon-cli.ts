@@ -31,7 +31,10 @@ const args = parseArgs({
     binaryPath: {
       type: 'string',
       short: 'b',
-    }
+    },
+    agree: {
+      type: 'boolean',
+    },
   }
 });
 
@@ -41,6 +44,7 @@ const anonConfig: AnonConfig = {
   orPort: 9001,
   controlPort: 9051,
   binaryPath: args.values.binaryPath,
+  autoTermsAgreement: args.values.agree === true,
 };
 
 function parsePort(value: string | undefined): number | undefined {
