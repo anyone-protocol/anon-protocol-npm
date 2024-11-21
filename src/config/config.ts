@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import fsbasic from 'fs';
 import os from 'os';
 import path from 'path';
+import readline from 'readline';
 
 export interface AnonConfig {
   /* Enables logging when set to true */
@@ -24,6 +25,23 @@ export interface AnonConfig {
 
   /* Path to the binary */
   binaryPath?: string;
+
+  /* Automatically agree to terms */
+  autoTermsAgreement?: boolean;
+}
+
+async function askForAgreement() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  return new Promise((resolve) => {
+    rl.question('Do you agree to the terms? (Press enter or y to agree, or ctrl-c to exit): ', (answer) => {
+      rl.close();
+      resolve(answer.toLowerCase() === 'y' || answer === '');
+    });
+  });
 }
 
 export async function createAnonConfigFile(options: AnonConfig): Promise<string> {
@@ -58,6 +76,30 @@ export async function createAnonConfigFile(options: AnonConfig): Promise<string>
     await fs.symlink(target, link, 'file').catch((err) => {
       console.error(`Error creating symlink: ${err}`);
     });
+  } else {
+    if (options.autoTermsAgreement) {
+      await fs.writeFile(target, 'agreed').catch((err) => {
+        console.error(`Error creating terms agreement file: ${err}`);
+      });
+      const link = path.join(tempDataDirPath, termsAgreementFileName);
+      await fs.symlink(target, link, 'file').catch((err) => {
+        console.error(`Error creating symlink: ${err}`);
+      });
+    } else {
+      const agreed = await askForAgreement();
+      if (agreed) {
+        await fs.writeFile(target, 'agreed').catch((err) => {
+          console.error(`Error creating terms agreement file: ${err}`);
+        });
+        const link = path.join(tempDataDirPath, termsAgreementFileName);
+        await fs.symlink(target, link, 'file').catch((err) => {
+          console.error(`Error creating symlink: ${err}`);
+        });
+      } else {
+        console.log('Agreement declined. Exiting...');
+        process.exit(1);
+      }
+    }
   }
 
   return configPath;

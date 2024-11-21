@@ -18,8 +18,16 @@ jobs:
 
       - name: NPM clean install
         run: npm ci
-
-      - name: Publish to npm
+      - name: Extract tag name
+        id: get_tag
+        run: echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      - name: Publish to npm with beta tag
+        if: contains(steps.get_tag.outputs.TAG_NAME, 'beta')
+        run: npm publish --tag beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm with latest tag
+        if: "!contains(steps.get_tag.outputs.TAG_NAME, 'beta')"
         run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

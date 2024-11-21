@@ -14,6 +14,7 @@ export class Anon {
     orPort: 0,
     controlPort: 9051,
     binaryPath: undefined,
+    autoTermsAgreement: false,
   };
   private process?: ChildProcess;
 
@@ -72,7 +73,7 @@ export class Anon {
 
   /**
    * Allows to check if Anon is running
-   * @returns true if Anon is running
+   * @returns {boolean} true if Anon is running
    */
   public isRunning(): boolean {
     return this.process !== undefined;

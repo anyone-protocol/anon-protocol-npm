@@ -180,6 +180,96 @@ export class AnonControlClient {
     }
 
     /**
+     * GETINFO
+        Sent from the client to the server.  The syntax is as for GETCONF:
+            "GETINFO" 1*(SP keyword) CRLF
+
+        Unlike GETCONF, this message is used for data that are not stored in the Tor
+        configuration file, and that may be longer than a single line.  On success,
+        one ReplyLine is sent for each requested value, followed by a final 250 OK
+        ReplyLine.  If a value fits on a single line, the format is:
+            250-keyword=value
+
+        If a value must be split over multiple lines, the format is:
+            250+keyword=
+            value
+            .
+        The server sends a 551 or 552 error on failure.
+        Recognized keys and their values include:
+     
+        "ns/all"
+         Router status info (v3 directory style) for all ORs we
+        that the consensus has an opinion about, joined by newlines.
+        [First implemented in 0.1.2.3-alpha.]
+        [In 0.2.0.9-alpha this switched from v2 directory style to v3]
+
+     * @returns 
+     */
+    async routerStatus(): Promise<RouterStatus[]> {
+        const response = await this.sendCommand('GETINFO ns/all');
+        
+        if (!response.startsWith('250+ns/all=')) {
+            throw new Error('Invalid response format');
+        }
+    
+        const cleanedResponse = response
+            .replace(/^250\+ns\/all=/, '')
+            .replace(/250 OK$/, '')
+            .trim();
+    
+        const routers: RouterStatus[] = [];
+        const lines = cleanedResponse.split('\n');
+        
+        let currentRouter: Partial<RouterStatus> = {};
+        
+        for (const line of lines) {
+            const trimmedLine = line.trim();
+            
+            // Router line starts with 'r '
+            if (trimmedLine.startsWith('r ')) {
+                if (Object.keys(currentRouter).length > 0) {
+                    routers.push(currentRouter as RouterStatus);
+                }
+                currentRouter = {};
+                
+                const [, nickname, fingerprint, digest, date, time, ip, orPort, dirPort] = 
+                    trimmedLine.split(' ');
+                
+                currentRouter = {
+                    nickname,
+                    fingerprint,
+                    digest,
+                    publishedTime: new Date(`${date}T${time}Z`),
+                    ip,
+                    orPort: parseInt(orPort, 10),
+                    dirPort: parseInt(dirPort, 10),
+                    flags: [],
+                    bandwidth: 0
+                };
+            }
+            
+            // Flags line starts with 's '
+            else if (trimmedLine.startsWith('s ')) {
+                currentRouter.flags = trimmedLine.substring(2).split(' ');
+            }
+            
+            // Bandwidth line starts with 'w '
+            else if (trimmedLine.startsWith('w ')) {
+                const bwMatch = trimmedLine.match(/Bandwidth=(\d+)/);
+                if (bwMatch) {
+                    currentRouter.bandwidth = parseInt(bwMatch[1], 10);
+                }
+            }
+        }
+        
+        if (Object.keys(currentRouter).length > 0) {
+            routers.push(currentRouter as RouterStatus);
+        }
+        
+        return routers;
+    }
+
+    /**
      * EXTENDCIRCUIT
         Sent from the client to the server.  The format is:
 
@@ -325,6 +415,18 @@ interface CircuitStatus {
     buildFlags: string[];
     purpose: string;
     timeCreated: Date;
+}
+
+interface RouterStatus {
+    nickname: string;
+    fingerprint: string;
+    digest: string;
+    publishedTime: Date;
+    ip: string;
+    orPort: number;
+    dirPort: number;
+    flags: string[];
+    bandwidth: number;
 }
 
 interface Relay {
