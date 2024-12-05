@@ -7,10 +7,6 @@ async function main() {
         const anon = new Anon({ displayLog: true, socksPort: 9050, controlPort: 9051 });
         const anonSocksClient = new AnonSocksClient(anon);
         await anon.start();
-
-        // wait for Anon to start
-        await new Promise(resolve => setTimeout(resolve, 15000));
-        console.log('Anon started');
         
         // make a request
         const response = await anonSocksClient.get('https://api.ipify.org?format=json');

@@ -51,16 +51,71 @@ export class Anon {
   
   /**
    * Starts Anon client with options configured in constructor
+   * 
+   * @returns {Promise<void>} Promise that resolves when Anon is started
    */
-  public async start() {
+  public async start(): Promise<void> {
     if (this.process !== undefined) {
       throw new Error('Anon process already started');
     }
-
+  
     const configPath = await createAnonConfigFile(this.options);
     const binaryPath = this.options.binaryPath ?? getBinaryPath('anon');
-    this.process = this.runBinary(binaryPath, configPath, () => this.onStop());
+  
+    return this.startWithTimeout(binaryPath, configPath);
   }
+
+  private startWithTimeout(binaryPath: string, configPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const { cleanup, timeoutId } = this.setupTimeoutHandler(reject);
+      try {
+        this.process = this.runBinary(binaryPath, configPath, () => this.onStop(), (percentage) => this.handleBootstrapProgess(percentage, resolve, timeoutId));
+        this.attachProcessListeners(this.process, cleanup, reject);
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    })
+  }
+
+  private setupTimeoutHandler(reject: (reason: Error) => void){
+    const timeoutId = setTimeout(() => {
+      reject(new Error('Anon failed to bootstrap within 60 seconds'));
+    }, 60000);
+
+    const cleanup = () => {
+      clearTimeout(timeoutId);
+      if (this.process) {
+        this.process.kill();
+        this.process = undefined;
+      }
+    };
+
+    return { cleanup, timeoutId };
+  }
+
+  private handleBootstrapProgess(percentage: number, resolve: () => void, timeoutId: NodeJS.Timeout){
+    if (percentage === 100) {
+      clearTimeout(timeoutId);
+      resolve();
+    }
+  }
+
+  private attachProcessListeners(process: ChildProcess, cleanup: () => void, reject: (reason: Error) => void){
+    this.process?.on('error', (error) => {
+      cleanup();
+      reject(error);
+    });
+
+    this.process?.once('exit', (code) => {
+      if (code !== 0 && code !== null) {
+        cleanup();
+        reject(new Error(`Anon process exited with code ${code}`));
+      }
+    });
+  }
+
+
 
   /**
    * Stops Anon client
@@ -83,7 +138,7 @@ export class Anon {
     this.process = undefined;
   }
 
-  private runBinary(binaryPath: string, configPath: string, onStop?: VoidFunction): ChildProcess {
+  private runBinary(binaryPath: string, configPath: string, onStop?: VoidFunction, onBootstrap?: (percentage: number) => void): ChildProcess {
     let args: Array<string> = [];
     if (configPath !== undefined) {
       args = ['-f', configPath]
@@ -113,8 +168,17 @@ export class Anon {
       const logLines = data.toString().split('\n');
     
       for (const line of logLines) {
+        const bootstrapMatch = line.match(/Bootstrapped (\d+)%.*?: (.+)/);
+        const versionMatch = line.match(/Anon (\d+\.\d+\.\d+[\w.-]+) .* running on/);
+        
         if (this.options?.displayLog === true) {
           console.log(line);
+          if (bootstrapMatch) {
+            const [, percentage, status] = bootstrapMatch;
+            if (onBootstrap) {
+              onBootstrap(parseInt(percentage, 10));
+            }
+          }
         } else {
           const bootstrapMatch = line.match(/Bootstrapped (\d+)%.*?: (.+)/);
           const versionMatch = line.match(/Anon (\d+\.\d+\.\d+[\w.-]+) .* running on/);
@@ -124,8 +188,14 @@ export class Anon {
             const formattedPercentage = chalk.green(`${percentage}%`);
             const formattedStatus = chalk.blue(status);
             console.log(`Bootstrapped ${formattedPercentage}: ${formattedStatus}`);
+
+            if (onBootstrap) {
+              onBootstrap(parseInt(percentage, 10));
+            }
+
           } else if (line.match(/\[err\]/i)) {
             console.log(chalk.red(line));
+
           } else if (versionMatch) {
             const [, version] = versionMatch;
             console.log(chalk.yellow(`Running Anon version ${version} `));
