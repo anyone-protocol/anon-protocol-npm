@@ -4,7 +4,8 @@
   "description": "",
   "main": "out/index.js",
   "bin": {
-    "anyone-client": "./out/anon-cli.js"
+    "anyone-client": "./out/anon-cli.js",
+    "anyone-proxy": "./out/anon-proxy-cli.js"
   },
   "scripts": {
     "build": "tsc",
