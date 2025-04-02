@@ -1,7 +1,20 @@
 import * as net from 'net';
+import { AsyncQueue, AsyncEvent } from './queue';
 
 export class Control {
     private client: net.Socket;
+    private isAuthenticated: boolean = false;
+    private eventListeners: Map<string, Function[]> = new Map();
+
+    private lastHeartbeat = Date.now();
+
+    private msgLock = new AsyncQueue<void>();
+    private replyQueue = new AsyncQueue<string>();
+    private eventQueue = new AsyncQueue<string>();
+    private eventNotice = new AsyncEvent();
+
+    private readerLoopTask: Promise<void> | null = null;
+    private eventLoopTask: Promise<void> | null = null;
 
     constructor(host = '127.0.0.1', port = 9051) {
         console.log('Connecting to Anon Control Port at', host, port);
@@ -65,11 +78,59 @@ export class Control {
 
                 if (response.startsWith('250 OK')) {
                     console.log('Authenticated successfully');
+                    this.isAuthenticated = true;
+                    this.createLoopTasks();
                     resolve();
                 } else if (response.startsWith('515')) {
                     console.error('Authentication failed');
                     this.client.end();
                     reject('Authentication failed');
+                }
+            });
+
+            this.client.on('error', (err: Error) => {
+                console.error('Control port error:', err);
+                reject(err);
+            });
+        });
+    }
+
+    /**
+     * SETEVENTS
+        Request the server to inform the client about interesting events. The syntax is:
+
+        "SETEVENTS" [SP "EXTENDED"] *(SP EventCode) CRLF
+    
+        EventCode = 1*(ALPHA / "_")  (see section 4.1.x for event types)
+        Any events not listed in the SETEVENTS line are turned off; thus, 
+        sending SETEVENTS with an empty body turns off all event reporting.
+
+        The server responds with a 250 OK reply on success, 
+        and a 552 Unrecognized event reply if one of the event codes isn’t recognized. 
+        (On error, the list of active event codes isn’t changed.)
+
+        If the flag string “EXTENDED” is provided, 
+        Tor may provide extra information with events for this connection; 
+        see 4.1 for more information. 
+        NOTE: All events on a given connection will be provided in extended format, or none. 
+        NOTE: “EXTENDED” was first supported in Tor 0.1.1.9-alpha; it is always-on in Tor 0.2.2.1-alpha and later.
+
+        Each event is described in more detail in Section 4.1.
+     */
+    async setEvents(events: string[]): Promise<Boolean> {
+        return new Promise<Boolean>((resolve, reject) => {
+            const command = `SETEVENTS ${events.join(' ')}\r\n`;
+            this.client.write(command);
+
+            this.client.once('data', (data: Buffer) => {
+                const response = data.toString();
+                console.log('Control port response:', response);
+
+                if (response.startsWith('250 OK')) {
+                    resolve(true);
+                } else if (response.startsWith('552')) {
+                    console.error('Unrecognized event');
+                    reject(false);
                 }
             });
 
@@ -406,6 +467,265 @@ export class Control {
         this.client.write('QUIT\r\n');
         this.client.end();
     }
+
+    private async attachListeners(): Promise<[string[], string[]]> {
+        const setEvents: string[] = [];
+        const failedEvents: string[] = [];
+    
+        console.log('Is auth:', this.isAuthenticated);
+
+        if (!this.isAuthenticated || !this.client || this.client.destroyed) {
+            return [setEvents, failedEvents];
+        }
+    
+        const eventTypes = Array.from(this.eventListeners?.keys() || []);
+    
+        try {
+            console.log('Send attach request');
+            var isOk = await this.setEvents(eventTypes);
+            console.log('Attach request response:', isOk);
+            if (isOk) {
+                setEvents.push(...eventTypes);
+            } else {
+                for (const eventType of eventTypes) {
+                    isOk = await this.setEvents([eventType]);
+                    if (isOk) {
+                        setEvents.push(eventType);
+                    } else {
+                        failedEvents.push(eventType);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('Failed to attach listeners:', err);
+            failedEvents.push(...eventTypes);
+        }
+    
+        return [setEvents, failedEvents];
+    }
+
+    private async attachEventListenersOrFail() {
+        if (this.eventListeners.size === 0) {
+            return;
+        }
+
+        console.log('Attaching event listeners:', this.eventListeners.size);
+
+        const [, failedEvents] = await this.attachListeners();
+
+        console.log('Failed events:', failedEvents);        
+
+        if (failedEvents.length > 0) {
+            console.error('Failed to set events:', failedEvents);
+            for (const event of failedEvents) {
+                const callbacks = this.eventListeners.get(event);
+                if (callbacks) {
+                    this.eventListeners.delete(event);
+                }
+            }
+
+            throw new Error(`Failed to set events: ${failedEvents}`);
+        }
+    }
+
+    async addEventListener(callback: Function, ...eventType: string[]): Promise<void> {
+        for (const event of eventType) {
+            var callbacks: Function[] = this.eventListeners.get(event) || [];
+            callbacks.push(callback);
+            this.eventListeners.set(event, callbacks);
+        }
+        
+        console.log('Adding event listeners:', eventType);
+        console.log('Listeners:', this.eventListeners);
+
+        await this.attachEventListenersOrFail();
+    }
+
+    async removeEventListener(callback: Function): Promise<void> {
+        var eventTypesChanged = false;
+
+        for (const [eventType, callbacks] of this.eventListeners.entries()) {
+            const index = callbacks.indexOf(callback);
+            if (index !== -1) {
+                callbacks.splice(index, 1);
+            }
+
+            if (callbacks.length === 0) {
+                eventTypesChanged = true;
+                this.eventListeners.delete(eventType);
+            }
+        }
+
+        if (eventTypesChanged) {
+            await this.attachEventListenersOrFail();
+        }
+    }
+
+    private async recv(): Promise<string> {
+        return new Promise((resolve, reject) => {
+            let buffer = '';
+            let rawLines: string[] = [];
+            let inDataBlock = false;
+            let statusCode: string | null = null;
+            let divider: string | null = null;
+    
+            const onData = (data: Buffer) => {
+                buffer += data.toString();
+    
+                const lines = buffer.split('\r\n');
+    
+                // Hold the last possibly incomplete line
+                buffer = lines.pop() || '';
+    
+                for (const line of lines) {
+                    if (!inDataBlock && !/^\d{3}[ +\-]/.test(line)) {
+                        this.client.off('data', onData);
+                        return reject(new Error(`Malformed control message: ${line}`));
+                    }
+    
+                    rawLines.push(line);
+    
+                    if (!statusCode) {
+                        statusCode = line.substring(0, 3);
+                        divider = line.charAt(3);
+                    }
+    
+                    if (inDataBlock) {
+                        if (line === '.') {
+                            this.client.off('data', onData);
+                            return resolve(rawLines.join('\r\n'));
+                        }
+    
+                        const cleanLine = line.startsWith('..') ? line.slice(1) : line;
+                        rawLines[rawLines.length - 1] = cleanLine;
+                        continue;
+                    }
+    
+                    switch (divider) {
+                        case ' ':
+                            this.client.off('data', onData);
+                            return resolve(rawLines.join('\r\n'));
+                        case '+':
+                            inDataBlock = true;
+                            break;
+                        case '-':
+                            // continue collecting lines
+                            break;
+                        default:
+                            this.client.off('data', onData);
+                            return reject(new Error(`Unknown divider: '${divider}' in line: ${line}`));
+                    }
+                }
+            };
+    
+            this.client.on('data', onData);
+            this.client.once('error', (err) => {
+                this.client.off('data', onData);
+                reject(err);
+            });
+        });
+    }
+
+    private createLoopTasks(): void {
+        if (!this.readerLoopTask) {
+            this.readerLoopTask = this.readerLoop();
+        }
+
+        if (!this.eventLoopTask) {
+            this.eventLoopTask = this.eventLoop();
+        }
+    }
+
+    private async readerLoop(): Promise<void> {
+        while (this.client && !this.client.destroyed) {
+            try {
+                const message = await this.recv();
+                this.lastHeartbeat = Date.now();
+    
+                if (message.startsWith('650')) {
+                    // Asynchronous event
+                    this.eventQueue.push(message.substring(4));
+                    this.eventNotice.set();
+                } else {
+                    // Synchronous reply
+                    this.replyQueue.push(message);
+                }
+            } catch (err: any) {
+                // Unblock any waiting sendCommand calls
+                this.replyQueue.push(err.toString());
+            }
+        }
+    }
+
+    private convertToEvent(eventMessage: string): any {
+        const parts = eventMessage.split(' ');
+        const eventType = parts[0];
+        const eventData = parts.slice(1).join(' ');
+
+        return {
+            type: eventType,
+            data: eventData,
+        };
+    }
+
+    private async handleEvent(eventMessage: string): Promise<void> {
+        let event: any = null;
+        let eventType: string;
+    
+        try {
+            event = this.convertToEvent(eventMessage);  // you’ll implement this parser
+            eventType = event.type;
+        } catch (err) {
+            event = eventMessage;
+            eventType = 'MALFORMED_EVENTS';
+            console.error(`Tor sent a malformed event (${err}):`, eventMessage);
+        }
+    
+        // Dispatch to listeners
+        const listeners = this.eventListeners.get(eventType);
+        if (listeners) {
+            for (const listener of listeners) {
+                try {
+                    const result = listener(event);
+                    if (result instanceof Promise) {
+                        await result;
+                    }
+                } catch (err) {
+                    console.warn(`Event listener for ${eventType} raised an error:`, err);
+                }
+            }
+        }
+    }
+
+    private async eventLoop(): Promise<void> {
+        let socketClosedAt: number | null = null;
+    
+        while (true) {
+            try {
+                const eventMessage = await this.eventQueue.pop();
+
+                await this.handleEvent(eventMessage);
+    
+                if (!this.client || this.client.destroyed) {
+                    if (!socketClosedAt) {
+                        socketClosedAt = Date.now();
+                    } else if (Date.now() - socketClosedAt > 100) {
+                        break;
+                    }
+                }
+            } catch (err) {
+                if (!this.client || this.client.destroyed) break;
+    
+                try {
+                    await Promise.race([
+                        this.eventNotice.wait(),
+                        new Promise(resolve => setTimeout(resolve, 50)),
+                    ]);
+                } catch {}
+                this.eventNotice.clear();
+            }
+        }
+    }
 }
 
 interface CircuitStatus {
@@ -449,4 +769,12 @@ interface RelayInfo {
     orPort: number;
     flags: string[];
     bandwidth: number;
+}
+
+interface ControlMessage {
+    code: string;
+    divider: string;
+    content: string;
+    raw: string;
+    arrivedAt?: number;
 }
