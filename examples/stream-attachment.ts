@@ -1,4 +1,4 @@
-import { Control } from '../src/control';
+import { Control, StreamEvent } from '../src/control';
 import { Process } from "../src/process";
 import { Socks } from "../src/socks";
 
@@ -17,18 +17,28 @@ async function main() {
         // authenticate
         await control.authenticate();
 
+        await control.disableStreamAttachment();
+        console.log('Stream attachment disabled');
+
+        const circId = await control.extendCircuit();
+        console.log('Created circuit with id:', circId);
+
+        const circ = await control.getCircuit(circId);
+        console.log('Circuit:', circ);
+
         // add event listener
-        const eventListener = (event: any) => {
+        const eventListener = (event: StreamEvent) => {
             console.log('Event received:', event);
+            if (event.status === 'NEW') {
+                control.attachStream(event.streamId, circId);
+                console.log('Stream attached to circuit:', circId);
+            }
         };
 
-        control.addEventListener(eventListener, "INFO", "NOTICE", "WARN", "ERR");
+        control.addEventListener(eventListener, "STREAM");
 
         // sleep for a while to allow events to be received
         await new Promise(resolve => setTimeout(resolve, 1000));
-
-        const randomlyCreatedCircuitId = await control.extendCircuit();
-        console.log('Randomly created circuit id:', randomlyCreatedCircuitId);
 
         const response = await socks.get('http://ip-api.com/json');
         console.log('Response:', response.data);

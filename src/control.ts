@@ -18,12 +18,12 @@ export class Control {
 
     constructor(host = '127.0.0.1', port = 9051) {
         console.log('Connecting to Anon Control Port at', host, port);
-        
+
         this.client = net.createConnection({ host, port }, () => {
             console.log('Successfully connected to Anon Control Port');
         });
     }
-    
+
     /**
      * AUTHENTICATE
         Sent from the client to the server.  The syntax is:
@@ -68,11 +68,16 @@ export class Control {
      * @param password 
      * @returns 
      */
-    authenticate(password: string = 'password'): Promise<void> {
+    async authenticate(password: string = 'password'): Promise<void> {
         return new Promise<void>((resolve, reject) => {
-            this.client.write(`AUTHENTICATE "${password}"\r\n`);
+            const onError = (err: Error) => {
+                this.client.off('error', onError); // cleanup
+                console.error('Control port error:', err);
+                reject(err);
+            };
 
-            this.client.once('data', (data: Buffer) => {
+            const onData = (data: Buffer) => {
+                this.client.off('error', onError); // cleanup
                 const response = data.toString();
                 console.log('Control port response:', response);
 
@@ -86,12 +91,12 @@ export class Control {
                     this.client.end();
                     reject('Authentication failed');
                 }
-            });
+            };
 
-            this.client.on('error', (err: Error) => {
-                console.error('Control port error:', err);
-                reject(err);
-            });
+            this.client.once('data', onData);
+            this.client.on('error', onError);
+
+            this.client.write(`AUTHENTICATE "${password}"\r\n`);
         });
     }
 
@@ -117,12 +122,17 @@ export class Control {
 
         Each event is described in more detail in Section 4.1.
      */
-    async setEvents(events: string[]): Promise<Boolean> {
-        return new Promise<Boolean>((resolve, reject) => {
+    async setEvents(events: string[]): Promise<boolean> {
+        return new Promise<boolean>((resolve, reject) => {
             const command = `SETEVENTS ${events.join(' ')}\r\n`;
-            this.client.write(command);
 
-            this.client.once('data', (data: Buffer) => {
+            const onError = (err: Error) => {
+                this.client.off('error', onError);
+                reject(err);
+            };
+
+            const onData = (data: Buffer) => {
+                this.client.off('error', onError);
                 const response = data.toString();
                 console.log('Control port response:', response);
 
@@ -131,29 +141,33 @@ export class Control {
                 } else if (response.startsWith('552')) {
                     console.error('Unrecognized event');
                     reject(false);
+                } else {
+                    reject(new Error(`Unexpected response: ${response}`));
                 }
-            });
+            };
 
-            this.client.on('error', (err: Error) => {
-                console.error('Control port error:', err);
-                reject(err);
-            });
+            this.client.once('data', onData);
+            this.client.on('error', onError);
+            this.client.write(command);
         });
     }
 
     async sendCommand(command: string): Promise<string> {
         return new Promise<string>((resolve, reject) => {
-            this.client.write(`${command}\r\n`);
+            const onError = (err: Error) => {
+                this.client.off('error', onError);
+                reject(err);
+            };
 
-            this.client.once('data', (data: Buffer) => {
+            const onData = (data: Buffer) => {
+                this.client.off('error', onError);
                 const response = data.toString();
                 resolve(response);
-            });
+            };
 
-            this.client.on('error', (err: Error) => {
-                console.error('Control port error:', err);
-                reject(err);
-            });
+            this.client.once('data', onData);
+            this.client.on('error', onError);
+            this.client.write(`${command}\r\n`);
         });
     }
 
@@ -184,28 +198,28 @@ export class Control {
      * @returns 
      */
     async circuitStatus(): Promise<CircuitStatus[]> {
-        return this.sendCommand('GETINFO circuit-status').then(response => { 
+        return this.sendCommand('GETINFO circuit-status').then(response => {
 
             if (!response.startsWith('250+circuit-status=') && !response.startsWith('250 OK')) {
                 console.error('Invalid response: ', response);
                 throw new Error('Invalid response format');
             }
-        
+
             const cleanedResponse = response
                 .replace(/^250\+circuit-status=/, '')
                 .replace(/250 OK$/, '')
-        
+
             const circuits: CircuitStatus[] = [];
             const lines = cleanedResponse.split('\n').filter(line => line.trim() !== '');
-        
+
             for (const line of lines) {
                 const trimmedLine = line.trim();
                 const parts = trimmedLine.split(' ');
-        
+
                 if (parts.length < 4 || isNaN(parseInt(parts[0], 10))) {
                     continue;
                 }
-        
+
                 const state = parts[1];
                 const circuitId = parseInt(parts[0], 10);
                 const relaysPart = parts.find(part => part.startsWith('$'))?.split(',') || [];
@@ -216,14 +230,14 @@ export class Control {
                         nickname: nickname
                     };
                 });
-        
+
                 const buildFlags = parts.find(part => part.startsWith('BUILD_FLAGS='))
                     ?.split('=')[1]?.split(',') || [];
                 const purpose = parts.find(part => part.startsWith('PURPOSE='))
                     ?.split('=')[1] || '';
                 const timeCreated = new Date(parts.find(part => part.startsWith('TIME_CREATED='))
-                    ?.split('=')[1]+'Z' || ''); // Add Z to make it ISO 8601 compliant
-        
+                    ?.split('=')[1] + 'Z' || ''); // Add Z to make it ISO 8601 compliant
+
                 const circuit: CircuitStatus = {
                     circuitId,
                     state,
@@ -232,12 +246,22 @@ export class Control {
                     purpose,
                     timeCreated
                 };
-        
+
                 circuits.push(circuit);
             }
-            
+
             return circuits;
         });
+    }
+
+    async getCircuit(circuitId: number): Promise<CircuitStatus> {
+        const circuits = await this.circuitStatus();
+        const circuit = circuits.find(c => c.circuitId === circuitId);
+        if (!circuit) {
+            console.error(`Circuit with ID ${circuitId} not found`);
+            throw new Error(`Circuit with ID ${circuitId} not found`);
+        }
+        return circuit;
     }
 
     /**
@@ -268,34 +292,34 @@ export class Control {
      */
     async routerStatus(): Promise<RouterStatus[]> {
         const response = await this.sendCommand('GETINFO ns/all');
-        
+
         if (!response.startsWith('250+ns/all=')) {
             throw new Error('Invalid response format');
         }
-    
+
         const cleanedResponse = response
             .replace(/^250\+ns\/all=/, '')
             .replace(/250 OK$/, '')
             .trim();
-    
+
         const routers: RouterStatus[] = [];
         const lines = cleanedResponse.split('\n');
-        
+
         let currentRouter: Partial<RouterStatus> = {};
-        
+
         for (const line of lines) {
             const trimmedLine = line.trim();
-            
+
             // Router line starts with 'r '
             if (trimmedLine.startsWith('r ')) {
                 if (Object.keys(currentRouter).length > 0) {
                     routers.push(currentRouter as RouterStatus);
                 }
                 currentRouter = {};
-                
-                const [, nickname, fingerprint, digest, date, time, ip, orPort, dirPort] = 
+
+                const [, nickname, fingerprint, digest, date, time, ip, orPort, dirPort] =
                     trimmedLine.split(' ');
-                
+
                 currentRouter = {
                     nickname,
                     fingerprint,
@@ -308,12 +332,12 @@ export class Control {
                     bandwidth: 0
                 };
             }
-            
+
             // Flags line starts with 's '
             else if (trimmedLine.startsWith('s ')) {
                 currentRouter.flags = trimmedLine.substring(2).split(' ');
             }
-            
+
             // Bandwidth line starts with 'w '
             else if (trimmedLine.startsWith('w ')) {
                 const bwMatch = trimmedLine.match(/Bandwidth=(\d+)/);
@@ -322,11 +346,11 @@ export class Control {
                 }
             }
         }
-        
+
         if (Object.keys(currentRouter).length > 0) {
             routers.push(currentRouter as RouterStatus);
         }
-        
+
         return routers;
     }
 
@@ -409,7 +433,7 @@ export class Control {
 
         if (!response.startsWith('250')) {
             throw new Error(`Failed to close circuit: ${response}`);
-        }  
+        }
     }
 
     /**
@@ -442,7 +466,7 @@ export class Control {
             // Extract IP and ORPort from the line starting with 'r '
             if (line.startsWith('r ')) {
                 const parts = line.split(' ');
-            
+
                 if (parts.length >= 7) {
                     nickname = parts[1];
                     ip = parts[6];
@@ -455,7 +479,7 @@ export class Control {
             }
         }
 
-        return {fingerprint, nickname, ip, orPort, flags, bandwidth};
+        return { fingerprint, nickname, ip, orPort, flags, bandwidth };
     }
 
     /**
@@ -468,18 +492,97 @@ export class Control {
         this.client.end();
     }
 
+    async disableStreamAttachment(): Promise<void> {
+        await this.setConf('__LeaveStreamsUnattached', '1');
+    }
+
+    async enableStreamAttachment(): Promise<void> {
+        await this.resetConf('__LeaveStreamsUnattached');
+    }
+
+    async setConf(param: string, value: string | string[]): Promise<void> {
+        await this.setOptions({ [param]: value }, false);
+    }
+
+    async resetConf(...params: string[]): Promise<void> {
+        const resetOptions: Record<string, null> = {};
+        for (const param of params) {
+            resetOptions[param] = null;
+        }
+        await this.setOptions(resetOptions, true);
+    }
+
+    private async setOptions(
+        options: Record<string, string | string[] | null>,
+        reset: boolean
+    ): Promise<void> {
+        const commandParts: string[] = [reset ? 'RESETCONF' : 'SETCONF'];
+
+        for (const [key, val] of Object.entries(options)) {
+            if (val === null || val === undefined) {
+                commandParts.push(key); // RESETCONF-style nulling
+            } else if (typeof val === 'string') {
+                commandParts.push(`${key}="${val.trim()}"`);
+            } else if (Array.isArray(val)) {
+                for (const item of val) {
+                    commandParts.push(`${key}="${item.trim()}"`);
+                }
+            } else {
+                throw new Error(`Invalid config value for ${key}: ${val}`);
+            }
+        }
+
+        const command = commandParts.join(' ');
+        const response = await this.sendCommand(command);
+
+        if (!response.startsWith('250 OK')) {
+            throw new Error(`SETCONF/RESETCONF failed: ${response}`);
+        }
+    }
+
+    /**
+     * ATTACHSTREAM
+     * Attaches a stream to a circuit\
+     * 
+     * @param streamId - ID of the stream to be attached
+     * @param circuitId - ID of the circuit to attach to
+     * @param exitingHop - Optional hop index where traffic should exit
+     * @throws Error if the stream or circuit is invalid, unsatisfiable, or the operation fails
+     */
+    async attachStream(streamId: number, circuitId: number, exitingHop?: number): Promise<void> {
+        let command = `ATTACHSTREAM ${streamId} ${circuitId}`;
+
+        if (exitingHop !== undefined) {
+            command += ` HOP=${exitingHop}`;
+        }
+
+        const response = await this.sendCommand(command);
+
+        if (!response.startsWith('250')) {
+            if (response.startsWith('552')) {
+                throw new Error(`InvalidRequest: ${response}`);
+            } else if (response.startsWith('551')) {
+                throw new Error(`OperationFailed: ${response}`);
+            } else if (response.startsWith('555')) {
+                throw new Error(`UnsatisfiableRequest: ${response}`);
+            } else {
+                throw new Error(`ProtocolError: Unexpected ATTACHSTREAM response: ${response}`);
+            }
+        }
+    }
+
     private async attachListeners(): Promise<[string[], string[]]> {
         const setEvents: string[] = [];
         const failedEvents: string[] = [];
-    
+
         console.log('Is auth:', this.isAuthenticated);
 
         if (!this.isAuthenticated || !this.client || this.client.destroyed) {
             return [setEvents, failedEvents];
         }
-    
+
         const eventTypes = Array.from(this.eventListeners?.keys() || []);
-    
+
         try {
             console.log('Send attach request');
             var isOk = await this.setEvents(eventTypes);
@@ -500,7 +603,7 @@ export class Control {
             console.error('Failed to attach listeners:', err);
             failedEvents.push(...eventTypes);
         }
-    
+
         return [setEvents, failedEvents];
     }
 
@@ -513,7 +616,7 @@ export class Control {
 
         const [, failedEvents] = await this.attachListeners();
 
-        console.log('Failed events:', failedEvents);        
+        console.log('Failed events:', failedEvents);
 
         if (failedEvents.length > 0) {
             console.error('Failed to set events:', failedEvents);
@@ -534,7 +637,7 @@ export class Control {
             callbacks.push(callback);
             this.eventListeners.set(event, callbacks);
         }
-        
+
         console.log('Adding event listeners:', eventType);
         console.log('Listeners:', this.eventListeners);
 
@@ -568,39 +671,39 @@ export class Control {
             let inDataBlock = false;
             let statusCode: string | null = null;
             let divider: string | null = null;
-    
+
             const onData = (data: Buffer) => {
                 buffer += data.toString();
-    
+
                 const lines = buffer.split('\r\n');
-    
+
                 // Hold the last possibly incomplete line
                 buffer = lines.pop() || '';
-    
+
                 for (const line of lines) {
                     if (!inDataBlock && !/^\d{3}[ +\-]/.test(line)) {
                         this.client.off('data', onData);
                         return reject(new Error(`Malformed control message: ${line}`));
                     }
-    
+
                     rawLines.push(line);
-    
+
                     if (!statusCode) {
                         statusCode = line.substring(0, 3);
                         divider = line.charAt(3);
                     }
-    
+
                     if (inDataBlock) {
                         if (line === '.') {
                             this.client.off('data', onData);
                             return resolve(rawLines.join('\r\n'));
                         }
-    
+
                         const cleanLine = line.startsWith('..') ? line.slice(1) : line;
                         rawLines[rawLines.length - 1] = cleanLine;
                         continue;
                     }
-    
+
                     switch (divider) {
                         case ' ':
                             this.client.off('data', onData);
@@ -617,7 +720,7 @@ export class Control {
                     }
                 }
             };
-    
+
             this.client.on('data', onData);
             this.client.once('error', (err) => {
                 this.client.off('data', onData);
@@ -641,7 +744,7 @@ export class Control {
             try {
                 const message = await this.recv();
                 this.lastHeartbeat = Date.now();
-    
+
                 if (message.startsWith('650')) {
                     // Asynchronous event
                     this.eventQueue.push(message.substring(4));
@@ -657,21 +760,53 @@ export class Control {
         }
     }
 
-    private convertToEvent(eventMessage: string): any {
+    private convertToEvent(eventMessage: string): Event {
         const parts = eventMessage.split(' ');
         const eventType = parts[0];
         const eventData = parts.slice(1).join(' ');
 
-        return {
-            type: eventType,
-            data: eventData,
-        };
+        // Example parsing logic
+        // You can customize this based on the actual event format
+
+        switch (eventType) {
+            case 'STREAM':
+                const [streamId, status, circId, target, ...rest] = parts.slice(1);
+
+                const keywordArgs: Record<string, string> = {};
+                for (const arg of rest) {
+                    const [key, value] = arg.split('=');
+                    if (key && value !== undefined) {
+                        keywordArgs[key.toUpperCase()] = value;
+                    }
+                }
+
+                const event: StreamEvent = {
+                    type: eventType,
+                    streamId: parseInt(streamId, 10),
+                    status,
+                    circId,
+                    target,
+                    sourceAddr: keywordArgs['SOURCE_ADDR'] || null,
+                    purpose: keywordArgs['PURPOSE'] || null,
+                    reason: keywordArgs['REASON'] || null,
+                    remoteReason: keywordArgs['REMOTE_REASON'] || null,
+                    source: keywordArgs['SOURCE'] || null
+                };
+
+                return event;
+
+            default:
+                return {
+                    type: eventType,
+                    data: eventData,
+                };
+        }
     }
 
     private async handleEvent(eventMessage: string): Promise<void> {
         let event: any = null;
         let eventType: string;
-    
+
         try {
             event = this.convertToEvent(eventMessage);  // you’ll implement this parser
             eventType = event.type;
@@ -680,7 +815,7 @@ export class Control {
             eventType = 'MALFORMED_EVENTS';
             console.error(`Tor sent a malformed event (${err}):`, eventMessage);
         }
-    
+
         // Dispatch to listeners
         const listeners = this.eventListeners.get(eventType);
         if (listeners) {
@@ -699,13 +834,13 @@ export class Control {
 
     private async eventLoop(): Promise<void> {
         let socketClosedAt: number | null = null;
-    
+
         while (true) {
             try {
                 const eventMessage = await this.eventQueue.pop();
 
                 await this.handleEvent(eventMessage);
-    
+
                 if (!this.client || this.client.destroyed) {
                     if (!socketClosedAt) {
                         socketClosedAt = Date.now();
@@ -715,13 +850,13 @@ export class Control {
                 }
             } catch (err) {
                 if (!this.client || this.client.destroyed) break;
-    
+
                 try {
                     await Promise.race([
                         this.eventNotice.wait(),
                         new Promise(resolve => setTimeout(resolve, 50)),
                     ]);
-                } catch {}
+                } catch { }
                 this.eventNotice.clear();
             }
         }
@@ -777,4 +912,34 @@ interface ControlMessage {
     content: string;
     raw: string;
     arrivedAt?: number;
+}
+
+interface Event {
+    type: string;
+    data?: string;
+}
+
+interface StreamEvent extends Event {
+    type: 'STREAM';
+    streamId: number;
+    status: string;
+    circId: string;
+    target: string;
+    sourceAddr: string | null;
+    purpose: string | null;
+    reason: string | null;
+    remoteReason: string | null;
+    source: string | null;
+}
+
+export {
+    CircuitStatus,
+    RouterStatus,
+    Relay,
+    Purpose,
+    ExtendCircuitOptions,
+    RelayInfo,
+    ControlMessage,
+    Event,
+    StreamEvent
 }
