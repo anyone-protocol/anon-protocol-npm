@@ -264,6 +264,55 @@ export class Control {
         return circuit;
     }
 
+    async msg(message: string): Promise<string> {
+        // Acquire message lock
+        await this.msgLock.push();
+
+        try {
+            // Flush any old responses/errors in the reply queue
+            while (!this.replyQueue.isEmpty) {
+                const response = await this.replyQueue.pop();
+
+                if (response.includes('SocketClosed')) {
+                    // This is expected sometimes
+                    continue;
+                } else if (response.includes('ProtocolError')) {
+                    console.info('Tor provided a malformed message:', response);
+                } else if (response.includes('ControllerError')) {
+                    console.info('Socket experienced a problem:', response);
+                } else {
+                    console.info('Failed to deliver a response:', response);
+                }
+            }
+
+            // Send the message
+            this.client.write(`${message}\r\n`);
+
+            // Wait for reply
+            const response = await this.replyQueue.pop();
+
+            // In a real implementation, you'd parse response objects here
+            if (response.startsWith('5')) {
+                throw new Error(`ControllerError: ${response}`);
+            }
+
+            return response;
+        } catch (err) {
+            if (!this.client || this.client.destroyed) {
+                this.end();
+                throw new Error('SocketClosed');
+            }
+
+            throw err;
+        } finally {
+            this.msgLock.pop(); // Release lock
+        }
+    }
+
+    async resolve(hostname: string): Promise<void> {
+        await this.msg(`RESOLVE ${hostname}`);
+    }
+
     /**
      * GETINFO
         Sent from the client to the server.  The syntax is as for GETCONF:
@@ -795,6 +844,16 @@ export class Control {
 
                 return event;
 
+            case 'ADDRMAP':
+                const [address, mappedAddress, expires] = parts.slice(1);
+                const addrMapEvent: AddrMapEvent = {
+                    type: eventType,
+                    address,
+                    mappedAddress,
+                    expires: expires ? new Date(expires) : undefined
+                };
+                return addrMapEvent;
+
             default:
                 return {
                     type: eventType,
@@ -932,6 +991,13 @@ interface StreamEvent extends Event {
     source: string | null;
 }
 
+interface AddrMapEvent {
+    type: 'ADDRMAP';
+    address: string;
+    mappedAddress: string;
+    expires?: Date;
+}
+
 export {
     CircuitStatus,
     RouterStatus,
@@ -941,5 +1007,6 @@ export {
     RelayInfo,
     ControlMessage,
     Event,
-    StreamEvent
+    StreamEvent,
+    AddrMapEvent
 }
