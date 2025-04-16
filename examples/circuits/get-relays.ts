@@ -16,10 +16,10 @@ async function main() {
         await control.authenticate();
 
         // get router status (all relays in consensus)
-        const routerStatus = await control.routerStatus();
+        const relays = await control.getRelays();
 
         // pretty print available relays
-        console.log(JSON.stringify(routerStatus, null, 2));
+        console.log(JSON.stringify(relays, null, 2));
 
         // close connection
         control.end();

@@ -1,12 +1,11 @@
 import * as net from 'net';
 import { AsyncQueue, AsyncEvent } from './queue';
+import { Buffer } from 'buffer';
 
 export class Control {
     private client: net.Socket;
     private isAuthenticated: boolean = false;
     private eventListeners: Map<string, Function[]> = new Map();
-
-    private lastHeartbeat = Date.now();
 
     private msgLock = new AsyncQueue<void>();
     private replyQueue = new AsyncQueue<string>();
@@ -22,186 +21,40 @@ export class Control {
         this.client = net.createConnection({ host, port }, () => {
             console.log('Successfully connected to Anon Control Port');
         });
+
+        this.createLoopTasks();
     }
 
-    /**
-     * AUTHENTICATE
-        Sent from the client to the server.  The syntax is:
-
-            "AUTHENTICATE" [ SP 1*HEXDIG / QuotedString ] CRLF
-
-        This command is used to authenticate to the server. The provided string is
-        one of the following:
-
-            * (For the HASHEDPASSWORD authentication method; see 3.21)
-            The original password represented as a QuotedString.
-
-            * (For the COOKIE is authentication method; see 3.21)
-            The contents of the cookie file, formatted in hexadecimal
-
-            * (For the SAFECOOKIE authentication method; see 3.21)
-            The HMAC based on the AUTHCHALLENGE message, in hexadecimal.
-
-        The server responds with 250 OK on success or 515 Bad authentication if
-        the authentication cookie is incorrect.  Tor closes the connection on an
-        authentication failure.
-
-        The authentication token can be specified as either a quoted ASCII string,
-        or as an unquoted hexadecimal encoding of that same string (to avoid escaping
-        issues).
-
-        For information on how the implementation securely stores authentication
-        information on disk, see section 5.1.
-
-        Before the client has authenticated, no command other than
-        PROTOCOLINFO, AUTHCHALLENGE, AUTHENTICATE, or QUIT is valid.  If the
-        controller sends any other command, or sends a malformed command, or
-        sends an unsuccessful AUTHENTICATE command, or sends PROTOCOLINFO or
-        AUTHCHALLENGE more than once, Tor sends an error reply and closes
-        the connection.
-
-        To prevent some cross-protocol attacks, the AUTHENTICATE command is still
-        required even if all authentication methods in Tor are disabled.  In this
-        case, the controller should just send "AUTHENTICATE" CRLF.
-        (Versions of Tor before 0.1.2.16 and 0.2.0.4-alpha did not close the
-        connection after an authentication failure.)
-     * @param password 
-     * @returns 
-     */
     async authenticate(password: string = 'password'): Promise<void> {
-        return new Promise<void>((resolve, reject) => {
-            const onError = (err: Error) => {
-                this.client.off('error', onError); // cleanup
-                console.error('Control port error:', err);
-                reject(err);
-            };
+        const response = await this.msg(`AUTHENTICATE "${password}"`);
 
-            const onData = (data: Buffer) => {
-                this.client.off('error', onError); // cleanup
-                const response = data.toString();
-                console.log('Control port response:', response);
-
-                if (response.startsWith('250 OK')) {
-                    console.log('Authenticated successfully');
-                    this.isAuthenticated = true;
-                    this.createLoopTasks();
-                    resolve();
-                } else if (response.startsWith('515')) {
-                    console.error('Authentication failed');
-                    this.client.end();
-                    reject('Authentication failed');
-                }
-            };
-
-            this.client.once('data', onData);
-            this.client.on('error', onError);
-
-            this.client.write(`AUTHENTICATE "${password}"\r\n`);
-        });
+        if (response.startsWith('250 OK')) {
+            this.isAuthenticated = true;
+            console.log('Authenticated to Anon Control Port');
+        } else if (response.startsWith('515')) {
+            throw new Error('Authentication failed');
+        } else {
+            throw new Error(`Unexpected response: ${response}`);
+        }
     }
 
-    /**
-     * SETEVENTS
-        Request the server to inform the client about interesting events. The syntax is:
-
-        "SETEVENTS" [SP "EXTENDED"] *(SP EventCode) CRLF
-    
-        EventCode = 1*(ALPHA / "_")  (see section 4.1.x for event types)
-        Any events not listed in the SETEVENTS line are turned off; thus, 
-        sending SETEVENTS with an empty body turns off all event reporting.
-
-        The server responds with a 250 OK reply on success, 
-        and a 552 Unrecognized event reply if one of the event codes isn’t recognized. 
-        (On error, the list of active event codes isn’t changed.)
-
-        If the flag string “EXTENDED” is provided, 
-        Tor may provide extra information with events for this connection; 
-        see 4.1 for more information. 
-        NOTE: All events on a given connection will be provided in extended format, or none. 
-        NOTE: “EXTENDED” was first supported in Tor 0.1.1.9-alpha; it is always-on in Tor 0.2.2.1-alpha and later.
-
-        Each event is described in more detail in Section 4.1.
-     */
     async setEvents(events: string[]): Promise<boolean> {
-        return new Promise<boolean>((resolve, reject) => {
-            const command = `SETEVENTS ${events.join(' ')}\r\n`;
+        const command = `SETEVENTS ${events.join(' ')}`;
 
-            const onError = (err: Error) => {
-                this.client.off('error', onError);
-                reject(err);
-            };
+        const response = await this.msg(command);
 
-            const onData = (data: Buffer) => {
-                this.client.off('error', onError);
-                const response = data.toString();
-                console.log('Control port response:', response);
-
-                if (response.startsWith('250 OK')) {
-                    resolve(true);
-                } else if (response.startsWith('552')) {
-                    console.error('Unrecognized event');
-                    reject(false);
-                } else {
-                    reject(new Error(`Unexpected response: ${response}`));
-                }
-            };
-
-            this.client.once('data', onData);
-            this.client.on('error', onError);
-            this.client.write(command);
-        });
+        if (response.startsWith('250 OK')) {
+            return true;
+        } else {
+            console.error('Error: ', response);
+            return false;
+        }
     }
 
-    async sendCommand(command: string): Promise<string> {
-        return new Promise<string>((resolve, reject) => {
-            const onError = (err: Error) => {
-                this.client.off('error', onError);
-                reject(err);
-            };
-
-            const onData = (data: Buffer) => {
-                this.client.off('error', onError);
-                const response = data.toString();
-                resolve(response);
-            };
-
-            this.client.once('data', onData);
-            this.client.on('error', onError);
-            this.client.write(`${command}\r\n`);
-        });
-    }
-
-    /**
-     * GETINFO
-        Sent from the client to the server.  The syntax is as for GETCONF:
-            "GETINFO" 1*(SP keyword) CRLF
-
-        Unlike GETCONF, this message is used for data that are not stored in the Tor
-        configuration file, and that may be longer than a single line.  On success,
-        one ReplyLine is sent for each requested value, followed by a final 250 OK
-        ReplyLine.  If a value fits on a single line, the format is:
-            250-keyword=value
-
-        If a value must be split over multiple lines, the format is:
-            250+keyword=
-            value
-            .
-        The server sends a 551 or 552 error on failure.
-        Recognized keys and their values include:
-     
-        "circuit-status"
-        A series of lines as for a circuit status event. Each line is of
-        the form described in section 4.1.1, omitting the initial
-        "650 CIRC ".  Note that clients must be ready to accept additional
-        arguments as described in section 4.1.
-
-     * @returns 
-     */
     async circuitStatus(): Promise<CircuitStatus[]> {
-        return this.sendCommand('GETINFO circuit-status').then(response => {
+        return this.msg('GETINFO circuit-status').then(response => {
 
             if (!response.startsWith('250+circuit-status=') && !response.startsWith('250 OK')) {
-                console.error('Invalid response: ', response);
                 throw new Error('Invalid response format');
             }
 
@@ -293,7 +146,7 @@ export class Control {
 
             // In a real implementation, you'd parse response objects here
             if (response.startsWith('5')) {
-                throw new Error(`ControllerError: ${response}`);
+                console.error('Error: ', response.substring(0, 100));
             }
 
             return response;
@@ -305,7 +158,7 @@ export class Control {
 
             throw err;
         } finally {
-            this.msgLock.pop(); // Release lock
+            await this.msgLock.pop(); // Release lock
         }
     }
 
@@ -313,130 +166,24 @@ export class Control {
         await this.msg(`RESOLVE ${hostname}`);
     }
 
-    /**
-     * GETINFO
-        Sent from the client to the server.  The syntax is as for GETCONF:
-            "GETINFO" 1*(SP keyword) CRLF
-
-        Unlike GETCONF, this message is used for data that are not stored in the Tor
-        configuration file, and that may be longer than a single line.  On success,
-        one ReplyLine is sent for each requested value, followed by a final 250 OK
-        ReplyLine.  If a value fits on a single line, the format is:
-            250-keyword=value
-
-        If a value must be split over multiple lines, the format is:
-            250+keyword=
-            value
-            .
-        The server sends a 551 or 552 error on failure.
-        Recognized keys and their values include:
-     
-        "ns/all"
-         Router status info (v3 directory style) for all ORs we
-        that the consensus has an opinion about, joined by newlines.
-        [First implemented in 0.1.2.3-alpha.]
-        [In 0.2.0.9-alpha this switched from v2 directory style to v3]
-
-     * @returns 
-     */
-    async routerStatus(): Promise<RouterStatus[]> {
-        const response = await this.sendCommand('GETINFO ns/all');
-
-        if (!response.startsWith('250+ns/all=')) {
-            throw new Error('Invalid response format');
-        }
-
-        const cleanedResponse = response
-            .replace(/^250\+ns\/all=/, '')
-            .replace(/250 OK$/, '')
-            .trim();
-
-        const routers: RouterStatus[] = [];
-        const lines = cleanedResponse.split('\n');
-
-        let currentRouter: Partial<RouterStatus> = {};
-
-        for (const line of lines) {
-            const trimmedLine = line.trim();
-
-            // Router line starts with 'r '
-            if (trimmedLine.startsWith('r ')) {
-                if (Object.keys(currentRouter).length > 0) {
-                    routers.push(currentRouter as RouterStatus);
-                }
-                currentRouter = {};
-
-                const [, nickname, fingerprint, digest, date, time, ip, orPort, dirPort] =
-                    trimmedLine.split(' ');
-
-                currentRouter = {
-                    nickname,
-                    fingerprint,
-                    digest,
-                    publishedTime: new Date(`${date}T${time}Z`),
-                    ip,
-                    orPort: parseInt(orPort, 10),
-                    dirPort: parseInt(dirPort, 10),
-                    flags: [],
-                    bandwidth: 0
-                };
-            }
-
-            // Flags line starts with 's '
-            else if (trimmedLine.startsWith('s ')) {
-                currentRouter.flags = trimmedLine.substring(2).split(' ');
-            }
-
-            // Bandwidth line starts with 'w '
-            else if (trimmedLine.startsWith('w ')) {
-                const bwMatch = trimmedLine.match(/Bandwidth=(\d+)/);
-                if (bwMatch) {
-                    currentRouter.bandwidth = parseInt(bwMatch[1], 10);
-                }
-            }
-        }
-
-        if (Object.keys(currentRouter).length > 0) {
-            routers.push(currentRouter as RouterStatus);
-        }
-
-        return routers;
-    }
-
-    /**
-     * EXTENDCIRCUIT
-        Sent from the client to the server.  The format is:
-
-        "EXTENDCIRCUIT" SP CircuitID
-            [SP ServerSpec *("," ServerSpec)]
-            [SP "purpose=" Purpose] CRLF
-
-        This request takes one of two forms: either the CircuitID is zero, in
-        which case it is a request for the server to build a new circuit,
-        or the CircuitID is nonzero, in which case it is a request for the
-        server to extend an existing circuit with that ID according to the
-        specified path.
-
-        If the CircuitID is 0, the controller has the option of providing
-        a path for Anon to use to build the circuit. If it does not provide
-        a path, Anon will select one automatically from high capacity nodes
-        according to path-spec.txt.
-
-        If CircuitID is 0 and "purpose=" is specified, then the circuit's
-        purpose is set. Two choices are recognized: "general" and
-        "controller". If not specified, circuits are created as "general".
-
-        If the request is successful, the server sends a reply containing a
-        message body consisting of the CircuitID of the (maybe newly created)
-        circuit. The syntax is:
-        "250" SP "EXTENDED" SP CircuitID CRLF
-     * @param options 
-     * @returns circuitId
-     */
     async extendCircuit(options: ExtendCircuitOptions = {}): Promise<number> {
         const circuitId: number = options.circuitId ?? 0;
         const serverSpecs: string[] = options.serverSpecs ?? [];
         const purpose: Purpose = options.purpose ?? 'general';
+        const awaitBuild: boolean = options.awaitBuild ?? false;
+
+        var queue;
+        var eventListener: Function | null = null;
+        if (awaitBuild) {
+            queue = new AsyncQueue<string>();
+
+            eventListener = (event: Event) => {
+                if (event.type === 'CIRC') {
+                    queue.push(event.data!);
+                }
+            };
+            await this.addEventListener(eventListener, 'CIRC');
+        }
 
         let command = `EXTENDCIRCUIT ${circuitId}`;
 
@@ -448,51 +195,45 @@ export class Control {
             command += ` purpose=${purpose}`;
         }
 
-        const response = await this.sendCommand(command);
+        const response = await this.msg(command);
 
         if (!response.startsWith('250 EXTENDED')) {
-            console.error('Failed to extend circuit:', response);
             throw new Error('Failed to extend circuit');
         }
 
-        return parseInt(response.split(' ')[2], 10); // circuitId
+        const circId = response.split(' ')[2];
+
+        if (awaitBuild) {
+            var received = false;
+
+            while (!received) {
+                const event = await queue!.pop();
+                const id = event.split(' ')[0];
+
+                if (id === circId) {
+                    received = true;
+                }
+            }
+
+            await this.removeEventListener(eventListener!);
+        }
+
+        return parseInt(circId, 10); // circuitId
     }
 
-    /**
-     * CLOSECIRCUIT
-        The syntax is:
-
-            "CLOSECIRCUIT" SP CircuitID *(SP Flag) CRLF
-            Flag = "IfUnused"
-
-
-        Tells the server to close the specified circuit. If "IfUnused" is
-        provided, do not close the circuit unless it is unused.
-        Other flags may be defined in the future; Tor SHOULD ignore unrecognized
-        flags.
-
-        Tor replies with 250 OK on success, or a 512 if there aren't enough
-        arguments, or a 552 if it doesn't recognize the CircuitID.
-     * @param circuitId 
-     */
     async closeCircuit(circuitId: number): Promise<void> {
         const command = `CLOSECIRCUIT ${circuitId}`;
 
-        const response = await this.sendCommand(command);
+        const response = await this.msg(command);
 
         if (!response.startsWith('250')) {
             throw new Error(`Failed to close circuit: ${response}`);
         }
     }
 
-    /**
-     * Get relay info by fingerprint
-     * @param fingerprint 
-     * @returns address
-     */
     async getRelayInfo(fingerprint: string): Promise<RelayInfo> {
         const command = `GETINFO ns/id/$${fingerprint}`;
-        const response = await this.sendCommand(command);
+        const response = await this.msg(command);
 
         if (!response.startsWith('250+ns/id/')) {
             throw new Error(`Failed to get relay address: ${response}`);
@@ -531,11 +272,6 @@ export class Control {
         return { fingerprint, nickname, ip, orPort, flags, bandwidth };
     }
 
-    /**
-     * QUIT
-        Tells the server to hang up on this controller connection. This command
-        can be used before authenticating.
-     */
     end() {
         this.client.write('QUIT\r\n');
         this.client.end();
@@ -582,22 +318,13 @@ export class Control {
         }
 
         const command = commandParts.join(' ');
-        const response = await this.sendCommand(command);
+        const response = await this.msg(command);
 
         if (!response.startsWith('250 OK')) {
             throw new Error(`SETCONF/RESETCONF failed: ${response}`);
         }
     }
 
-    /**
-     * ATTACHSTREAM
-     * Attaches a stream to a circuit\
-     * 
-     * @param streamId - ID of the stream to be attached
-     * @param circuitId - ID of the circuit to attach to
-     * @param exitingHop - Optional hop index where traffic should exit
-     * @throws Error if the stream or circuit is invalid, unsatisfiable, or the operation fails
-     */
     async attachStream(streamId: number, circuitId: number, exitingHop?: number): Promise<void> {
         let command = `ATTACHSTREAM ${streamId} ${circuitId}`;
 
@@ -605,7 +332,7 @@ export class Control {
             command += ` HOP=${exitingHop}`;
         }
 
-        const response = await this.sendCommand(command);
+        const response = await this.msg(command);
 
         if (!response.startsWith('250')) {
             if (response.startsWith('552')) {
@@ -624,8 +351,6 @@ export class Control {
         const setEvents: string[] = [];
         const failedEvents: string[] = [];
 
-        console.log('Is auth:', this.isAuthenticated);
-
         if (!this.isAuthenticated || !this.client || this.client.destroyed) {
             return [setEvents, failedEvents];
         }
@@ -633,9 +358,7 @@ export class Control {
         const eventTypes = Array.from(this.eventListeners?.keys() || []);
 
         try {
-            console.log('Send attach request');
             var isOk = await this.setEvents(eventTypes);
-            console.log('Attach request response:', isOk);
             if (isOk) {
                 setEvents.push(...eventTypes);
             } else {
@@ -661,11 +384,7 @@ export class Control {
             return;
         }
 
-        console.log('Attaching event listeners:', this.eventListeners.size);
-
         const [, failedEvents] = await this.attachListeners();
-
-        console.log('Failed events:', failedEvents);
 
         if (failedEvents.length > 0) {
             console.error('Failed to set events:', failedEvents);
@@ -686,9 +405,6 @@ export class Control {
             callbacks.push(callback);
             this.eventListeners.set(event, callbacks);
         }
-
-        console.log('Adding event listeners:', eventType);
-        console.log('Listeners:', this.eventListeners);
 
         await this.attachEventListenersOrFail();
     }
@@ -713,68 +429,76 @@ export class Control {
         }
     }
 
-    private async recv(): Promise<string> {
+    private recv(): Promise<string> {
         return new Promise((resolve, reject) => {
             let buffer = '';
             let rawLines: string[] = [];
-            let inDataBlock = false;
             let statusCode: string | null = null;
             let divider: string | null = null;
+            let inDataBlock = false;
 
             const onData = (data: Buffer) => {
                 buffer += data.toString();
 
                 const lines = buffer.split('\r\n');
-
-                // Hold the last possibly incomplete line
-                buffer = lines.pop() || '';
+                buffer = lines.pop() || ''; // hold the trailing partial line
 
                 for (const line of lines) {
-                    if (!inDataBlock && !/^\d{3}[ +\-]/.test(line)) {
-                        this.client.off('data', onData);
-                        return reject(new Error(`Malformed control message: ${line}`));
-                    }
-
-                    rawLines.push(line);
-
                     if (!statusCode) {
+                        if (!/^\d{3}[ +\-]/.test(line)) {
+                            this.client.off('data', onData);
+                            this.client.off('error', onError);
+                            console.error('Malformed control message:', line);
+                            return reject(new Error(`Malformed control message: ${line}`));
+                        }
                         statusCode = line.substring(0, 3);
                         divider = line.charAt(3);
                     }
 
                     if (inDataBlock) {
+                        rawLines.push(line);
                         if (line === '.') {
+                            // end of block, now wait for the final status (250 OK)
+                            inDataBlock = false;
                             this.client.off('data', onData);
+                            this.client.off('error', onError);
                             return resolve(rawLines.join('\r\n'));
                         }
+                    } else {
+                        rawLines.push(line);
 
-                        const cleanLine = line.startsWith('..') ? line.slice(1) : line;
-                        rawLines[rawLines.length - 1] = cleanLine;
-                        continue;
-                    }
+                        switch (divider) {
+                            case ' ':
+                                this.client.off('data', onData);
+                                this.client.off('error', onError);
+                                return resolve(rawLines.join('\r\n'));
 
-                    switch (divider) {
-                        case ' ':
-                            this.client.off('data', onData);
-                            return resolve(rawLines.join('\r\n'));
-                        case '+':
-                            inDataBlock = true;
-                            break;
-                        case '-':
-                            // continue collecting lines
-                            break;
-                        default:
-                            this.client.off('data', onData);
-                            return reject(new Error(`Unknown divider: '${divider}' in line: ${line}`));
+                            case '+':
+                                inDataBlock = true;
+                                break;
+
+                            case '-':
+                                this.client.off('data', onData);
+                                this.client.off('error', onError);
+                                return resolve(rawLines.join('\r\n'));
+
+                            default:
+                                this.client.off('data', onData);
+                                this.client.off('error', onError);
+                                return reject(new Error(`Unknown divider: '${divider}' in line: ${line}`));
+                        }
                     }
                 }
             };
 
-            this.client.on('data', onData);
-            this.client.once('error', (err) => {
+            const onError = (err: Error) => {
                 this.client.off('data', onData);
+                this.client.off('error', onError);
                 reject(err);
-            });
+            };
+
+            this.client.on('data', onData);
+            this.client.once('error', onError);
         });
     }
 
@@ -792,7 +516,6 @@ export class Control {
         while (this.client && !this.client.destroyed) {
             try {
                 const message = await this.recv();
-                this.lastHeartbeat = Date.now();
 
                 if (message.startsWith('650')) {
                     // Asynchronous event
@@ -803,7 +526,6 @@ export class Control {
                     this.replyQueue.push(message);
                 }
             } catch (err: any) {
-                // Unblock any waiting sendCommand calls
                 this.replyQueue.push(err.toString());
             }
         }
@@ -920,6 +642,123 @@ export class Control {
             }
         }
     }
+
+    async getRelays(): Promise<RelayInfo[]> {
+        const response = await this.msg('GETINFO ns/all');
+
+        if (!response.startsWith('250+ns/all=')) {
+            throw new Error('Invalid response format');
+        }
+
+        const cleanedResponse = response
+            .replace(/^250\+ns\/all=/, '')
+            .replace(/250 OK$/, '')
+            .trim();
+
+        const relays: RelayInfo[] = [];
+        const lines = cleanedResponse.split('\n');
+
+        let current: Partial<RelayInfo> = {};
+
+        for (const line of lines) {
+            const trimmedLine = line.trim();
+
+            if (trimmedLine.startsWith('r ')) {
+                if (current.fingerprint) {
+                    relays.push(current as RelayInfo);
+                    current = {};
+                }
+                const [, nickname, fingerprint, , date, time, ip, orPort, dirPort] = trimmedLine.split(' ');
+                
+                current.nickname = nickname;
+                current.fingerprint = this.base64ToHex(fingerprint);
+                current.published = new Date(`${date}T${time}Z`);
+                current.ip = ip;
+                current.orPort = parseInt(orPort, 10);
+                current.dirPort = parseInt(dirPort, 10);
+                current.flags = [];
+                current.bandwidth = 0;
+            } else if (trimmedLine.startsWith('s ')) {
+                current.flags = trimmedLine.substring(2).split(' ');
+            } else if (trimmedLine.startsWith('w ')) {
+                const match = trimmedLine.match(/Bandwidth=(\d+)/);
+                if (match) {
+                    current.bandwidth = parseInt(match[1], 10);
+                }
+            }
+        }
+
+        if (current.fingerprint) {
+            relays.push(current as RelayInfo);
+        }
+
+        return relays;
+    }
+
+    async filterRelaysByCountries(
+        relays: RelayInfo[],
+        ...countries: string[]
+    ): Promise<RelayInfo[]> {
+        const filteredRelays: RelayInfo[] = [];
+
+        for (const relay of relays) {
+            const country = await this.getCountry(relay.ip);
+            if (countries.includes(country)) {
+                filteredRelays.push(relay);
+            }
+        }
+
+        return filteredRelays;
+    }
+
+    filterRelaysByFlags(
+        relays: RelayInfo[],
+        ...flags: string[]
+    ): RelayInfo[] {
+        return relays.filter(relay => {
+            return flags.every(flag => relay.flags.includes(flag));
+        });
+    }
+
+    async getCountry(address: string): Promise<string> {
+        const response = await this.msg(`GETINFO ip-to-country/${address}`);
+
+        if (!response.startsWith('250-ip-to-country/')) {
+            throw new Error('Invalid response format');
+        }
+        const cleanedResponse = response
+            .replace(/^250-ip-to-country\//, '')
+            .replace(/250 OK$/, '')
+            .trim();
+        const parts = cleanedResponse.split('=');
+        if (parts.length < 2) {
+            throw new Error('Invalid response format');
+        }
+        const country = parts[1];
+        return country;
+    }
+
+    private base64ToHex(identity: string, checkIfFingerprint: boolean = true): string {
+        let decoded: Buffer;
+
+        try {
+            decoded = Buffer.from(identity, 'base64');
+        } catch (err) {
+            throw new Error(`Unable to decode identity string '${identity}'`);
+        }
+
+        const hex = decoded.toString('hex').toUpperCase();
+
+        if (checkIfFingerprint && !this.isValidFingerprint(hex)) {
+            throw new Error(`Decoded '${identity}' to '${hex}', which isn't a valid fingerprint`);
+        }
+
+        return hex;
+    }
+
+    private isValidFingerprint(hex: string): boolean {
+        return /^[A-F0-9]{40}$/.test(hex);
+    }
 }
 
 interface CircuitStatus {
@@ -929,18 +768,6 @@ interface CircuitStatus {
     buildFlags: string[];
     purpose: string;
     timeCreated: Date;
-}
-
-interface RouterStatus {
-    nickname: string;
-    fingerprint: string;
-    digest: string;
-    publishedTime: Date;
-    ip: string;
-    orPort: number;
-    dirPort: number;
-    flags: string[];
-    bandwidth: number;
 }
 
 interface Relay {
@@ -954,6 +781,7 @@ interface ExtendCircuitOptions {
     circuitId?: number;
     serverSpecs?: string[];
     purpose?: Purpose;
+    awaitBuild?: boolean;
 }
 
 interface RelayInfo {
@@ -963,6 +791,8 @@ interface RelayInfo {
     orPort: number;
     flags: string[];
     bandwidth: number;
+    published?: Date;
+    dirPort?: number;
 }
 
 interface ControlMessage {
@@ -1000,7 +830,6 @@ interface AddrMapEvent {
 
 export {
     CircuitStatus,
-    RouterStatus,
     Relay,
     Purpose,
     ExtendCircuitOptions,

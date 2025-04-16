@@ -20,22 +20,22 @@ async function main() {
         await control.disableStreamAttachment();
         console.log('Stream attachment disabled');
 
-        const circId = await control.extendCircuit();
+        const circId = await control.extendCircuit({awaitBuild: true});
         console.log('Created circuit with id:', circId);
 
         const circ = await control.getCircuit(circId);
         console.log('Circuit:', circ);
 
         // add event listener
-        const eventListener = (event: StreamEvent) => {
+        const eventListener = async (event: StreamEvent) => {
             console.log('Event received:', event);
             if (event.status === 'NEW') {
-                control.attachStream(event.streamId, circId);
+                await control.attachStream(event.streamId, circId);
                 console.log('Stream attached to circuit:', circId);
             }
         };
 
-        control.addEventListener(eventListener, "STREAM");
+        await control.addEventListener(eventListener, "STREAM");
 
         // sleep for a while to allow events to be received
         await new Promise(resolve => setTimeout(resolve, 1000));
