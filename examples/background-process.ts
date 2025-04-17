@@ -36,11 +36,12 @@ class AnonRunner {
             console.log('Relays:', relays.length);
 
             for (const route of config.routings) {
-                // const candidates = await this.control.filterRelaysByCountries(relays, ...route.exitCountries);
-                console.log('Candidates:', relays.length);
-                const exits = this.control.filterRelaysByFlags(relays, 'Exit');
-                console.log('Exits:', exits.length);
-                const guards = this.control.filterRelaysByFlags(relays, 'Guard');
+                let exits = this.control.filterRelaysByFlags(relays, 'Exit', 'Stable', 'Running', 'Fast');
+                console.log('Exits all:', exits.length);
+                exits = await this.control.findFirstByCountry(exits, 5, ...route.exitCountries);
+                console.log('Exits filtered:', exits.length);
+
+                const guards = this.control.filterRelaysByFlags(relays, 'Guard', 'Stable', 'Running', 'Fast');
                 console.log('Guards:', guards.length);
 
                 const exit = exits[Math.floor(Math.random() * exits.length)];

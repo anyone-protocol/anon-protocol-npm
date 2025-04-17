@@ -1,5 +1,5 @@
-import { Control } from '../../src/control';
-import { Process } from "../../src/process";
+import { Control } from "../src/control";
+import { Process } from "../src/process";
 
 async function main() {
     console.log('Starting Anon...');
@@ -15,12 +15,18 @@ async function main() {
         // authenticate
         await control.authenticate();
 
-        // create new circuit with random servers
-        const randomlyCreatedCircuitId = await control.extendCircuit({awaitBuild: true});
-        console.log('Randomly created circuit id:', randomlyCreatedCircuitId);
+        // get router status (all relays in consensus)
+        const relays = await control.getRelays();
+
+        console.log('Available relays:', relays.length);
+
+        // filter relays based on a specific criterion
+        const filtered = await control.filterRelaysByCountries(relays, 'us', 'ca', 'gb');
+        
+        console.log('Filtered relays:', filtered.length);
 
         // close connection
-        control.end();
+        control.end();``
     } catch (error) {
         console.error('Error:', error);
     } finally {

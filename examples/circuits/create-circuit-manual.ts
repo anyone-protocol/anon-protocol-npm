@@ -27,7 +27,8 @@ async function main() {
                     circuits[0].relays[0].fingerprint, 
                     circuits[1].relays[0].fingerprint, 
                     circuits[2].relays[0].fingerprint
-                ]
+                ],
+                awaitBuild: true,
             }
         );
         console.log('Randomly created circuit id:', randomlyCreatedCircuitId);
