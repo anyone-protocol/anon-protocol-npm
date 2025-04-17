@@ -718,13 +718,26 @@ export class Control {
         return result;
     }
 
+    async populateCountries(relays: RelayInfo[]): Promise<void> {
+        for (const relay of relays) {
+            if (relay.country) {
+                continue;
+            }
+
+            try {
+                const country = await this.getCountry(relay.ip);
+                relay.country = country;
+            } catch (err) {
+                console.warn(`Failed to get country for ${relay.ip}:`, err);
+            }
+        }
+    }
+
     async filterRelaysByCountries(relays: RelayInfo[], ...countries: string[]): Promise<RelayInfo[]> {
         const result: RelayInfo[] = [];
 
         for (const relay of relays) {
             try {
-                // sleep for 50ms to avoid overwhelming the server
-                await new Promise(resolve => setTimeout(resolve, 50));
                 const country = await this.getCountry(relay.ip);
                 if (countries.includes(country)) {
                     result.push(relay);
@@ -767,6 +780,146 @@ export class Control {
         }
 
         return parts[1];
+    }
+
+    async selectPath(hopCount: number, ...exitCountries: string[]): Promise<string[]> {
+        const relays = await this.getRelays();
+
+        const state: PathState = {
+            desiredLength: hopCount,
+            desiredExitCountries: exitCountries,
+            excludedRelays: [],
+            excludedCountries: [],
+            relays: relays,
+            path: [],
+        }
+
+        await this.pickExit(state);
+
+        await this.populatePath(state)
+
+        return state.path!;
+    }
+
+    private async populatePath(state: PathState) {
+        let r = 0;
+
+        while (r == 0) {
+            r = await this.extendPath(state);
+        }
+    }
+
+    private async extendPath(state: PathState): Promise<number> {
+        if (state.path.length >= state.desiredLength) {
+            return 1;
+        }
+
+        let relay: RelayInfo | null = null;
+
+        if (state.path.length === 0) {
+            relay = await this.chooseEntry(state);
+        } else if (state.path.length === state.desiredLength - 1) {
+            relay = await this.chooseExit(state);
+        } else {
+            relay = await this.chooseMiddle(state);
+        }
+
+        state.path.push(relay!.fingerprint);
+        state.excludedRelays.push(relay!.fingerprint);
+        state.excludedCountries.push(relay!.country!);
+
+        return 0;
+    }
+
+    private async chooseMiddle(state: PathState): Promise<RelayInfo> {
+        let middleRelays = state.relays.filter(relay =>
+            relay.flags.includes('Stable') &&
+            relay.flags.includes('Running') &&
+            !relay.flags.includes('Exit') && // not Exit allowed for middle
+            !relay.flags.includes('Guard') // not Guard allowed for middle
+        );
+
+        await this.populateCountries(middleRelays);
+
+        middleRelays = middleRelays.filter(relay =>
+            !state.excludedRelays.includes(relay.fingerprint) &&
+            !state.excludedCountries.includes(relay.country!)
+        );
+
+        return this.chooseRandom(middleRelays);
+    }
+
+    private async chooseExit(state: PathState): Promise<RelayInfo> {
+        if (state.exit) {
+            return state.exit;
+        }
+
+        let exits = state.relays.filter(relay =>
+            relay.flags.includes('Exit') && !relay.flags.includes('BadExit')
+        );
+
+        await this.populateCountries(exits);
+
+        exits = exits.filter(relay =>
+            !state.excludedRelays.includes(relay.fingerprint) &&
+            !state.excludedCountries.includes(relay.country!)
+        );
+
+        if (state.desiredExitCountries.length > 0) {
+            exits = exits.filter(relay =>
+                state.desiredExitCountries.includes(relay.country!)
+            );
+        }
+
+        return this.chooseRandom(exits);
+    }
+
+    private async chooseEntry(state: PathState): Promise<RelayInfo> {
+        let entries = state.relays.filter(relay =>
+            relay.flags.includes('Guard') &&
+            relay.flags.includes('Stable') &&
+            relay.flags.includes('Running') &&
+            relay.flags.includes('Fast') &&
+            !relay.flags.includes('Exit') // not Exit allowed for entry
+        );
+
+        await this.populateCountries(entries);
+
+        if (state.desiredExitCountries.length > 0) {
+            entries = entries.filter(relay =>
+                relay.country && !state.desiredExitCountries.includes(relay.country)
+            );
+        }
+
+        entries = entries.filter(relay =>
+            !state.excludedRelays.includes(relay.fingerprint) &&
+            !state.excludedCountries.includes(relay.country!)
+        );
+
+        return this.chooseRandom(entries);
+    }
+
+    private async pickExit(state: PathState) {
+        state.exit = await this.chooseExit(state);
+
+        state.excludedRelays.push(state.exit.fingerprint);
+        state.excludedCountries.push(state.exit.country!);
+    }
+
+    private chooseRandom(relays: RelayInfo[]): RelayInfo {
+        const totalBandwidth = relays.reduce((sum, relay) => sum + relay.bandwidth, 0);
+
+        const weights = relays.map(relay => relay.bandwidth / totalBandwidth);
+        const randomValue = Math.random();
+
+        let cumulative = 0;
+        for (let i = 0; i < relays.length; i++) {
+            cumulative += weights[i];
+            if (randomValue < cumulative) {
+                return relays[i];
+            }
+        }
+        return relays[relays.length - 1]; // Fallback
     }
 
     private base64ToHex(identity: string, checkIfFingerprint: boolean = true): string {
@@ -824,6 +977,7 @@ interface RelayInfo {
     bandwidth: number;
     published?: Date;
     dirPort?: number;
+    country?: string;
 }
 
 interface ControlMessage {
@@ -857,6 +1011,16 @@ interface AddrMapEvent {
     address: string;
     mappedAddress: string;
     expires?: Date;
+}
+
+interface PathState {
+    desiredLength: number;
+    desiredExitCountries: string[];
+    excludedRelays: string[];
+    excludedCountries: string[];
+    path: string[];
+    relays: RelayInfo[];
+    exit?: RelayInfo;
 }
 
 export {
