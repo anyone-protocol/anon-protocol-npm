@@ -1,8 +1,6 @@
 import * as net from 'net';
 import { AsyncQueue, AsyncEvent } from './queue';
 import { Buffer } from 'buffer';
-import path from 'path';
-import { stat } from 'fs';
 
 export class Control {
     private client: net.Socket;
@@ -720,7 +718,7 @@ export class Control {
         return result;
     }
 
-    async populateCountrys(relays: RelayInfo[]): Promise<void> {
+    async populateCountries(relays: RelayInfo[]): Promise<void> {
         for (const relay of relays) {
             if (relay.country) {
                 continue;
@@ -841,7 +839,7 @@ export class Control {
             !relay.flags.includes('Guard') // not Guard allowed for middle
         );
 
-        await this.populateCountrys(middleRelays);
+        await this.populateCountries(middleRelays);
 
         middleRelays = middleRelays.filter(relay =>
             !state.excludedRelays.includes(relay.fingerprint) &&
@@ -860,7 +858,7 @@ export class Control {
             relay.flags.includes('Exit') && !relay.flags.includes('BadExit')
         );
 
-        await this.populateCountrys(exits);
+        await this.populateCountries(exits);
 
         exits = exits.filter(relay =>
             !state.excludedRelays.includes(relay.fingerprint) &&
@@ -885,7 +883,7 @@ export class Control {
             !relay.flags.includes('Exit') // not Exit allowed for entry
         );
 
-        await this.populateCountrys(entries);
+        await this.populateCountries(entries);
 
         if (state.desiredExitCountries.length > 0) {
             entries = entries.filter(relay =>

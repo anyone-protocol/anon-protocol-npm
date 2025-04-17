@@ -20,7 +20,7 @@ async function main() {
         console.log('Selected path:', path);
 
         // close connection
-        control.end();``
+        control.end();
     } catch (error) {
         console.error('Error:', error);
     } finally {

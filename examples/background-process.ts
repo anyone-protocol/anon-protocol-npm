@@ -42,7 +42,7 @@ class AnonRunner {
             console.log('Exits all:', exits.length);
 
             // populate country field
-            await this.control.populateCountrys(exits)
+            await this.control.populateCountries(exits)
 
             const guards = this.control.filterRelaysByFlags(relays, 'Guard', 'Stable', 'Running', 'Fast');
             console.log('Guards:', guards.length);
