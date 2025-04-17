@@ -29,22 +29,32 @@ class AnonRunner {
             console.log('Starting Anon SDK process...');
 
             await this.control.authenticate();
-            await this.control.disableStreamAttachment();
 
             const relays = await this.control.getRelays();
 
             console.log('Relays:', relays.length);
 
+            let exits = this.control.filterRelaysByFlags(relays, 'Exit', 'Stable', 'Running', 'Fast');
+            exits = exits.filter((exit) => {
+                return !exit.flags.includes('BadExit');
+            });
+
+            console.log('Exits all:', exits.length);
+
+            // populate country field
+            await this.control.populateCountrys(exits)
+
+            const guards = this.control.filterRelaysByFlags(relays, 'Guard', 'Stable', 'Running', 'Fast');
+            console.log('Guards:', guards.length);
+
             for (const route of config.routings) {
-                let exits = this.control.filterRelaysByFlags(relays, 'Exit', 'Stable', 'Running', 'Fast');
-                console.log('Exits all:', exits.length);
-                exits = await this.control.findFirstByCountry(exits, 5, ...route.exitCountries);
-                console.log('Exits filtered:', exits.length);
+                const exitsByCountry = exits.filter((exit) => {
+                    return route.exitCountries.some((country) => exit.country === country);
+                });
 
-                const guards = this.control.filterRelaysByFlags(relays, 'Guard', 'Stable', 'Running', 'Fast');
-                console.log('Guards:', guards.length);
+                console.log('Exits filtered:', exitsByCountry.length);
 
-                const exit = exits[Math.floor(Math.random() * exits.length)];
+                const exit = exitsByCountry[Math.floor(Math.random() * exitsByCountry.length)];
                 const guard = guards[Math.floor(Math.random() * guards.length)];
                 const path = [guard.fingerprint, exit.fingerprint];
                 console.log('Path:', path);
@@ -59,6 +69,8 @@ class AnonRunner {
                 const circuitId = await this.control.extendCircuit(options);
                 this.routingMap[route.targetAddress] = circuitId;
             }
+
+            await this.control.disableStreamAttachment();
 
             // add event listener
             const eventListener = async (event: StreamEvent) => {
