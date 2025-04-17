@@ -212,12 +212,10 @@ export class Control {
                 const event = await queue!.pop();
                 const id = event.split(' ')[0];
 
-                console.log('Received event:', event);
-
                 if (id === circId) {
+                    console.log('Received event', event);
                     numb++;
                     if (numb >= serverSpecs.length) { // todo - fix this (we recevie event on each extended hop) 
-                        console.warn(`Received more than one event for circuit ${circId}`);
                         received = true;
                     }   
                 }
