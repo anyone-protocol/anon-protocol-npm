@@ -206,12 +206,20 @@ export class Control {
         if (awaitBuild) {
             var received = false;
 
+            let numb = 0;
+
             while (!received) {
                 const event = await queue!.pop();
                 const id = event.split(' ')[0];
 
+                console.log('Received event:', event);
+
                 if (id === circId) {
-                    received = true;
+                    numb++;
+                    if (numb >= serverSpecs.length) { // todo - fix this (we recevie event on each extended hop) 
+                        console.warn(`Received more than one event for circuit ${circId}`);
+                        received = true;
+                    }   
                 }
             }
 
