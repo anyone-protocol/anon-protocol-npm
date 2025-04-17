@@ -439,38 +439,39 @@ export class Control {
 
             const onData = (data: Buffer) => {
                 buffer += data.toString();
-
-                const lines = buffer.split('\r\n');
-                buffer = lines.pop() || ''; // hold the trailing partial line
+                let lines = buffer.split('\r\n');
+                buffer = lines.pop() || '';
 
                 for (const line of lines) {
                     if (!statusCode) {
                         if (!/^\d{3}[ +\-]/.test(line)) {
-                            this.client.off('data', onData);
-                            this.client.off('error', onError);
-                            console.error('Malformed control message:', line);
-                            return reject(new Error(`Malformed control message: ${line}`));
+                            cleanup();
+                            return reject(new Error(`Malformed initial line: '${line}'`));
                         }
                         statusCode = line.substring(0, 3);
                         divider = line.charAt(3);
                     }
 
-                    if (inDataBlock) {
-                        rawLines.push(line);
-                        if (line === '.') {
-                            // end of block, now wait for the final status (250 OK)
-                            inDataBlock = false;
-                            this.client.off('data', onData);
-                            this.client.off('error', onError);
-                            return resolve(rawLines.join('\r\n'));
-                        }
+                    if (line.startsWith('..')) {
+                        rawLines.push(line.slice(1));
                     } else {
                         rawLines.push(line);
+                    }
 
+                    if (line.startsWith(statusCode + ' ')) {
+                        cleanup();
+                        return resolve(rawLines.join('\r\n'));
+                    }
+
+                    if (inDataBlock) {
+                        if (line === '.') {
+                            inDataBlock = false;
+                            continue;
+                        }
+                    } else {
                         switch (divider) {
                             case ' ':
-                                this.client.off('data', onData);
-                                this.client.off('error', onError);
+                                cleanup();
                                 return resolve(rawLines.join('\r\n'));
 
                             case '+':
@@ -478,13 +479,10 @@ export class Control {
                                 break;
 
                             case '-':
-                                this.client.off('data', onData);
-                                this.client.off('error', onError);
-                                return resolve(rawLines.join('\r\n'));
+                                continue
 
                             default:
-                                this.client.off('data', onData);
-                                this.client.off('error', onError);
+                                cleanup();
                                 return reject(new Error(`Unknown divider: '${divider}' in line: ${line}`));
                         }
                     }
@@ -492,9 +490,13 @@ export class Control {
             };
 
             const onError = (err: Error) => {
+                cleanup();
+                reject(err);
+            };
+
+            const cleanup = () => {
                 this.client.off('data', onData);
                 this.client.off('error', onError);
-                reject(err);
             };
 
             this.client.on('data', onData);
@@ -669,7 +671,7 @@ export class Control {
                     current = {};
                 }
                 const [, nickname, fingerprint, , date, time, ip, orPort, dirPort] = trimmedLine.split(' ');
-                
+
                 current.nickname = nickname;
                 current.fingerprint = this.base64ToHex(fingerprint);
                 current.published = new Date(`${date}T${time}Z`);
@@ -695,47 +697,76 @@ export class Control {
         return relays;
     }
 
-    async filterRelaysByCountries(
-        relays: RelayInfo[],
-        ...countries: string[]
-    ): Promise<RelayInfo[]> {
-        const filteredRelays: RelayInfo[] = [];
+    async findFirstByCountry(relays: RelayInfo[], firstCount: number, ...countries: string[]): Promise<RelayInfo[]> {
+        const result: RelayInfo[] = [];
 
         for (const relay of relays) {
-            const country = await this.getCountry(relay.ip);
-            if (countries.includes(country)) {
-                filteredRelays.push(relay);
+            if (firstCount > 0 && result.length >= firstCount) {
+                break;
+            }
+
+            try {
+                const country = await this.getCountry(relay.ip);
+                if (countries.includes(country)) {
+                    result.push(relay);
+                }
+            } catch (err) {
+                console.warn(`Failed to get country for ${relay.ip}:`, err);
             }
         }
 
-        return filteredRelays;
+        return result;
     }
 
-    filterRelaysByFlags(
-        relays: RelayInfo[],
-        ...flags: string[]
-    ): RelayInfo[] {
+    async filterRelaysByCountries(relays: RelayInfo[], ...countries: string[]): Promise<RelayInfo[]> {
+        const result: RelayInfo[] = [];
+
+        for (const relay of relays) {
+            try {
+                // sleep for 50ms to avoid overwhelming the server
+                await new Promise(resolve => setTimeout(resolve, 50));
+                const country = await this.getCountry(relay.ip);
+                if (countries.includes(country)) {
+                    result.push(relay);
+                }
+            } catch (err) {
+                console.warn(`Failed to get country for ${relay.ip}:`, err);
+            }
+        }
+
+        return result;
+    }
+
+    filterRelaysByFlags(relays: RelayInfo[], ...flags: string[]): RelayInfo[] {
         return relays.filter(relay => {
             return flags.every(flag => relay.flags.includes(flag));
         });
     }
 
-    async getCountry(address: string): Promise<string> {
-        const response = await this.msg(`GETINFO ip-to-country/${address}`);
+    async getCountry(address: string, timeoutMs: number = 1000): Promise<string> {
+
+        const msgPromise = this.msg(`GETINFO ip-to-country/${address}`);
+        const timeout = new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error('getCountry timeout')), timeoutMs)
+        );
+
+        const response = await Promise.race([msgPromise, timeout]);
 
         if (!response.startsWith('250-ip-to-country/')) {
             throw new Error('Invalid response format');
         }
+
         const cleanedResponse = response
             .replace(/^250-ip-to-country\//, '')
             .replace(/250 OK$/, '')
             .trim();
+
         const parts = cleanedResponse.split('=');
         if (parts.length < 2) {
             throw new Error('Invalid response format');
         }
-        const country = parts[1];
-        return country;
+
+        return parts[1];
     }
 
     private base64ToHex(identity: string, checkIfFingerprint: boolean = true): string {

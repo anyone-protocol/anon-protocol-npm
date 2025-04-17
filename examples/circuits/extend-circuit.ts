@@ -22,7 +22,8 @@ async function main() {
         const extendedCircuitId = await control.extendCircuit(
             { 
                 circuitId: circuits[0].circuitId, 
-                serverSpecs: [circuits[1].relays[0].fingerprint]
+                serverSpecs: [circuits[1].relays[0].fingerprint],
+                awaitBuild: true
             }
         );
         console.log('Extended circuit id:', extendedCircuitId);
