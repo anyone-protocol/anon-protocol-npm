@@ -1,6 +1,7 @@
 import { Control } from '../src/control';
 import { Process } from "../src/process";
 import { Socks } from "../src/socks";
+import { EventType } from '../src/models';
 
 async function main() {
     console.log('Starting Anon...');
@@ -22,7 +23,7 @@ async function main() {
             console.log('Event received:', event);
         };
 
-        control.addEventListener(eventListener, "INFO", "NOTICE", "WARN", "ERR");
+        control.addEventListener(eventListener, EventType.INFO, EventType.NOTICE, EventType.WARN);
 
         // sleep for a while to allow events to be received
         await new Promise(resolve => setTimeout(resolve, 1000));

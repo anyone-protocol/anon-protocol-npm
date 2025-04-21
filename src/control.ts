@@ -1,3 +1,5 @@
+import { Event, StreamEvent, AddrMapEvent, EventType } from './models';
+import { CircuitStatus, Relay, RelayInfo, ExtendCircuitOptions, Purpose, PathState, Flag } from './models';
 import * as net from 'net';
 import { AsyncQueue, AsyncEvent } from './queue';
 import { Buffer } from 'buffer';
@@ -5,7 +7,7 @@ import { Buffer } from 'buffer';
 export class Control {
     private client: net.Socket;
     private isAuthenticated: boolean = false;
-    private eventListeners: Map<string, Function[]> = new Map();
+    private eventListeners: Map<EventType, Function[]> = new Map();
 
     private msgLock = new AsyncQueue<void>();
     private replyQueue = new AsyncQueue<string>();
@@ -38,7 +40,7 @@ export class Control {
         }
     }
 
-    async setEvents(events: string[]): Promise<boolean> {
+    async setEvents(events: EventType[]): Promise<boolean> {
         const command = `SETEVENTS ${events.join(' ')}`;
 
         const response = await this.msg(command);
@@ -178,11 +180,11 @@ export class Control {
             queue = new AsyncQueue<string>();
 
             eventListener = (event: Event) => {
-                if (event.type === 'CIRC') {
+                if (event.type === EventType.CIRC) {
                     queue.push(event.data!);
                 }
             };
-            await this.addEventListener(eventListener, 'CIRC');
+            await this.addEventListener(eventListener, EventType.CIRC);
         }
 
         let command = `EXTENDCIRCUIT ${circuitId}`;
@@ -247,7 +249,7 @@ export class Control {
 
         const lines = response.split('\n').map(line => line.trim());
 
-        let flags: string[] = [];
+        let flags: Flag[] = [];
         let ip: string = '';
         let orPort: number = 0;
         let bandwidth: number = 0;
@@ -256,7 +258,7 @@ export class Control {
         for (const line of lines) {
             // Extract flags from the line starting with 's '
             if (line.startsWith('s ')) {
-                flags = line.substring(2).trim().split(' ');
+                flags = line.substring(2).trim().split(' ').map(flag => Flag[flag as keyof typeof Flag]);
             }
 
             // Extract IP and ORPort from the line starting with 'r '
@@ -353,9 +355,9 @@ export class Control {
         }
     }
 
-    private async attachListeners(): Promise<[string[], string[]]> {
-        const setEvents: string[] = [];
-        const failedEvents: string[] = [];
+    private async attachListeners(): Promise<[EventType[], EventType[]]> {
+        const setEvents: EventType[] = [];
+        const failedEvents: EventType[] = [];
 
         if (!this.isAuthenticated || !this.client || this.client.destroyed) {
             return [setEvents, failedEvents];
@@ -390,26 +392,26 @@ export class Control {
             return;
         }
 
-        const [, failedEvents] = await this.attachListeners();
+        const [, failedEventTypes] = await this.attachListeners();
 
-        if (failedEvents.length > 0) {
-            console.error('Failed to set events:', failedEvents);
-            for (const event of failedEvents) {
+        if (failedEventTypes.length > 0) {
+            console.error('Failed to set events:', failedEventTypes);
+            for (const event of failedEventTypes) {
                 const callbacks = this.eventListeners.get(event);
                 if (callbacks) {
                     this.eventListeners.delete(event);
                 }
             }
 
-            throw new Error(`Failed to set events: ${failedEvents}`);
+            throw new Error(`Failed to set events: ${failedEventTypes}`);
         }
     }
 
-    async addEventListener(callback: Function, ...eventType: string[]): Promise<void> {
-        for (const event of eventType) {
-            var callbacks: Function[] = this.eventListeners.get(event) || [];
+    async addEventListener(callback: Function, ...eventTypes: EventType[]): Promise<void> {
+        for (const eventType of eventTypes) {
+            var callbacks: Function[] = this.eventListeners.get(eventType) || [];
             callbacks.push(callback);
-            this.eventListeners.set(event, callbacks);
+            this.eventListeners.set(eventType, callbacks);
         }
 
         await this.attachEventListenersOrFail();
@@ -541,14 +543,14 @@ export class Control {
 
     private convertToEvent(eventMessage: string): Event {
         const parts = eventMessage.split(' ');
-        const eventType = parts[0];
+        const eventType = EventType[parts[0] as keyof typeof EventType];
         const eventData = parts.slice(1).join(' ');
 
         // Example parsing logic
         // You can customize this based on the actual event format
 
         switch (eventType) {
-            case 'STREAM':
+            case EventType.STREAM:
                 const [streamId, status, circId, target, ...rest] = parts.slice(1);
 
                 const keywordArgs: Record<string, string> = {};
@@ -574,7 +576,7 @@ export class Control {
 
                 return event;
 
-            case 'ADDRMAP':
+            case EventType.ADDRMAP:
                 const [address, mappedAddress, expires] = parts.slice(1);
                 const addrMapEvent: AddrMapEvent = {
                     type: eventType,
@@ -594,14 +596,14 @@ export class Control {
 
     private async handleEvent(eventMessage: string): Promise<void> {
         let event: any = null;
-        let eventType: string;
+        let eventType: EventType;
 
         try {
             event = this.convertToEvent(eventMessage);  // you’ll implement this parser
             eventType = event.type;
         } catch (err) {
             event = eventMessage;
-            eventType = 'MALFORMED_EVENTS';
+            eventType = EventType.UNKNOWN;
             console.error(`Tor sent a malformed event (${err}):`, eventMessage);
         }
 
@@ -687,7 +689,7 @@ export class Control {
                 current.flags = [];
                 current.bandwidth = 0;
             } else if (trimmedLine.startsWith('s ')) {
-                current.flags = trimmedLine.substring(2).split(' ');
+                current.flags = trimmedLine.substring(2).split(' ').map(flag => Flag[flag as keyof typeof Flag]);
             } else if (trimmedLine.startsWith('w ')) {
                 const match = trimmedLine.match(/Bandwidth=(\d+)/);
                 if (match) {
@@ -740,6 +742,7 @@ export class Control {
     }
 
     async filterRelaysByCountries(relays: RelayInfo[], ...countries: string[]): Promise<RelayInfo[]> {
+        countries = countries.map(country => country.toLowerCase());
         const result: RelayInfo[] = [];
 
         for (const relay of relays) {
@@ -756,14 +759,13 @@ export class Control {
         return result;
     }
 
-    filterRelaysByFlags(relays: RelayInfo[], ...flags: string[]): RelayInfo[] {
+    filterRelaysByFlags(relays: RelayInfo[], ...flags: Flag[]): RelayInfo[] {
         return relays.filter(relay => {
             return flags.every(flag => relay.flags.includes(flag));
         });
     }
 
     async getCountry(address: string, timeoutMs: number = 1000): Promise<string> {
-
         const msgPromise = this.msg(`GETINFO ip-to-country/${address}`);
         const timeout = new Promise<string>((_, reject) =>
             setTimeout(() => reject(new Error('getCountry timeout')), timeoutMs)
@@ -839,10 +841,10 @@ export class Control {
 
     private async chooseMiddle(state: PathState): Promise<RelayInfo> {
         let middleRelays = state.relays.filter(relay =>
-            relay.flags.includes('Stable') &&
-            relay.flags.includes('Running') &&
-            !relay.flags.includes('Exit') && // not Exit allowed for middle
-            !relay.flags.includes('Guard') // not Guard allowed for middle
+            relay.flags.includes(Flag.Stable) &&
+            relay.flags.includes(Flag.Running) &&
+            !relay.flags.includes(Flag.Exit) && // not Exit allowed for middle
+            !relay.flags.includes(Flag.Guard) // not Guard allowed for middle
         );
 
         await this.populateCountries(middleRelays);
@@ -861,7 +863,7 @@ export class Control {
         }
 
         let exits = state.relays.filter(relay =>
-            relay.flags.includes('Exit') && !relay.flags.includes('BadExit')
+            relay.flags.includes(Flag.Exit) && !relay.flags.includes(Flag.BadExit)
         );
 
         await this.populateCountries(exits);
@@ -882,11 +884,11 @@ export class Control {
 
     private async chooseEntry(state: PathState): Promise<RelayInfo> {
         let entries = state.relays.filter(relay =>
-            relay.flags.includes('Guard') &&
-            relay.flags.includes('Stable') &&
-            relay.flags.includes('Running') &&
-            relay.flags.includes('Fast') &&
-            !relay.flags.includes('Exit') // not Exit allowed for entry
+            relay.flags.includes(Flag.Guard) &&
+            relay.flags.includes(Flag.Guard) &&
+            relay.flags.includes(Flag.Running) &&
+            relay.flags.includes(Flag.Fast) &&
+            !relay.flags.includes(Flag.Exit) // not Exit allowed for entry
         );
 
         await this.populateCountries(entries);
@@ -949,94 +951,4 @@ export class Control {
     private isValidFingerprint(hex: string): boolean {
         return /^[A-F0-9]{40}$/.test(hex);
     }
-}
-
-interface CircuitStatus {
-    circuitId: number;
-    state: string;
-    relays: Relay[];
-    buildFlags: string[];
-    purpose: string;
-    timeCreated: Date;
-}
-
-interface Relay {
-    fingerprint: string;
-    nickname: string;
-}
-
-type Purpose = 'general' | 'controller';
-
-interface ExtendCircuitOptions {
-    circuitId?: number;
-    serverSpecs?: string[];
-    purpose?: Purpose;
-    awaitBuild?: boolean;
-}
-
-interface RelayInfo {
-    fingerprint: string;
-    nickname: string;
-    ip: string;
-    orPort: number;
-    flags: string[];
-    bandwidth: number;
-    published?: Date;
-    dirPort?: number;
-    country?: string;
-}
-
-interface ControlMessage {
-    code: string;
-    divider: string;
-    content: string;
-    raw: string;
-    arrivedAt?: number;
-}
-
-interface Event {
-    type: string;
-    data?: string;
-}
-
-interface StreamEvent extends Event {
-    type: 'STREAM';
-    streamId: number;
-    status: string;
-    circId: string;
-    target: string;
-    sourceAddr: string | null;
-    purpose: string | null;
-    reason: string | null;
-    remoteReason: string | null;
-    source: string | null;
-}
-
-interface AddrMapEvent {
-    type: 'ADDRMAP';
-    address: string;
-    mappedAddress: string;
-    expires?: Date;
-}
-
-interface PathState {
-    desiredLength: number;
-    desiredExitCountries: string[];
-    excludedRelays: string[];
-    excludedCountries: string[];
-    path: string[];
-    relays: RelayInfo[];
-    exit?: RelayInfo;
-}
-
-export {
-    CircuitStatus,
-    Relay,
-    Purpose,
-    ExtendCircuitOptions,
-    RelayInfo,
-    ControlMessage,
-    Event,
-    StreamEvent,
-    AddrMapEvent
 }
