@@ -885,7 +885,7 @@ export class Control {
     private async chooseEntry(state: PathState): Promise<RelayInfo> {
         let entries = state.relays.filter(relay =>
             relay.flags.includes(Flag.Guard) &&
-            relay.flags.includes(Flag.Guard) &&
+            relay.flags.includes(Flag.Stable) &&
             relay.flags.includes(Flag.Running) &&
             relay.flags.includes(Flag.Fast) &&
             !relay.flags.includes(Flag.Exit) // not Exit allowed for entry
