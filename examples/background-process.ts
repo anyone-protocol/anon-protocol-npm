@@ -1,4 +1,5 @@
-import { Control, ExtendCircuitOptions, StreamEvent } from '../src/control';
+import { Control } from '../src/control';
+import { ExtendCircuitOptions, StreamEvent, EventType, Flag } from '../src/models';
 import { Process } from "../src/process";
 import { VPNConfig } from '../src/models';
 
@@ -34,9 +35,9 @@ class AnonRunner {
 
             console.log('Relays:', relays.length);
 
-            let exits = this.control.filterRelaysByFlags(relays, 'Exit', 'Stable', 'Running', 'Fast');
+            let exits = this.control.filterRelaysByFlags(relays, Flag.Exit, Flag.Stable, Flag.Running, Flag.Fast);
             exits = exits.filter((exit) => {
-                return !exit.flags.includes('BadExit');
+                return !exit.flags.includes(Flag.BadExit);
             });
 
             console.log('Exits all:', exits.length);
@@ -44,12 +45,14 @@ class AnonRunner {
             // populate country field
             await this.control.populateCountries(exits)
 
-            const guards = this.control.filterRelaysByFlags(relays, 'Guard', 'Stable', 'Running', 'Fast');
+            const guards = this.control.filterRelaysByFlags(relays, Flag.Guard, Flag.Stable, Flag.Running, Flag.Fast);
             console.log('Guards:', guards.length);
 
             for (const route of config.routings) {
                 const exitsByCountry = exits.filter((exit) => {
-                    return route.exitCountries.some((country) => exit.country === country);
+                    return route.exitCountries
+                        .map(country => country.toLowerCase())
+                        .some((country) => exit.country === country);
                 });
 
                 console.log('Exits filtered:', exitsByCountry.length);
@@ -84,7 +87,7 @@ class AnonRunner {
                 }
             };
 
-            await this.control.addEventListener(eventListener, "STREAM");
+            await this.control.addEventListener(eventListener, EventType.STREAM);
 
             // keep process alive
             console.log('Anon VPN routing is active. Press Ctrl+C to quit.');

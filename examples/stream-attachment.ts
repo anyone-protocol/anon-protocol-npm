@@ -1,4 +1,5 @@
-import { Control, StreamEvent } from '../src/control';
+import { Control } from '../src/control';
+import { StreamEvent, EventType } from '../src/models';
 import { Process } from "../src/process";
 import { Socks } from "../src/socks";
 
@@ -35,7 +36,7 @@ async function main() {
             }
         };
 
-        await control.addEventListener(eventListener, "STREAM");
+        await control.addEventListener(eventListener, EventType.STREAM);
 
         // sleep for a while to allow events to be received
         await new Promise(resolve => setTimeout(resolve, 1000));

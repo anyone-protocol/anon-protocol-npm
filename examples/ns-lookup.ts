@@ -1,6 +1,6 @@
-import { AddrMapEvent, Control } from '../src/control';
+import { Control } from '../src/control';
+import { AddrMapEvent, EventType } from '../src/models';
 import { Process } from "../src/process";
-import { Socks } from "../src/socks";
 
 async function main() {
     console.log('Starting Anon...');
@@ -21,7 +21,7 @@ async function main() {
             console.log('Event received:', event);
         };
 
-        control.addEventListener(eventListener, "ADDRMAP");
+        control.addEventListener(eventListener, EventType.ADDRMAP);
 
         // sleep for a while to allow events to be received
         await new Promise(resolve => setTimeout(resolve, 1000));

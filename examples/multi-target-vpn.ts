@@ -1,8 +1,9 @@
 import { Process } from "../src/process";
 import { Socks } from "../src/socks";
 
-import { Control, ExtendCircuitOptions, StreamEvent } from '../src/control';
-import { VPNConfig } from '../src/models';
+import { Control } from '../src/control';
+import { ExtendCircuitOptions, StreamEvent, EventType } from '../src/models';
+import { VPNConfig, Flag } from '../src/models';
 
 const config: VPNConfig = {
     routings: [
@@ -29,13 +30,25 @@ async function main() {
 
         const routingMap: Record<string, number> = {};
 
-        for (const route of config.routings) {
-            const exits = control.filterRelaysByFlags(relays, 'Exit');
-            console.log('Exits:', exits.length);
-            const guards = control.filterRelaysByFlags(relays, 'Guard');
-            console.log('Guards:', guards.length);
+        let exits = control.filterRelaysByFlags(relays, Flag.Exit);
+        exits = exits.filter((exit) => {
+            return !exit.flags.includes(Flag.BadExit);
+        });
 
-            const exit = exits[Math.floor(Math.random() * exits.length)];
+        console.log('Exits all:', exits.length);
+
+        // populate country field
+        await control.populateCountries(exits)
+
+        const guards = control.filterRelaysByFlags(relays, Flag.Guard);
+        console.log('Guards:', guards.length);
+
+        for (const route of config.routings) {
+            const exitsByCountry = exits.filter((exit) => {
+                return route.exitCountries.some((country) => exit.country === country);
+            });
+
+            const exit = exitsByCountry[Math.floor(Math.random() * exitsByCountry.length)];
             const guard = guards[Math.floor(Math.random() * guards.length)];
             const path = [guard.fingerprint, exit.fingerprint];
             console.log('Path:', path);
@@ -68,7 +81,7 @@ async function main() {
             }
         };
 
-        await control.addEventListener(eventListener, "STREAM");
+        await control.addEventListener(eventListener, EventType.STREAM);
 
 
         // Make a request through the established circuits
