@@ -3,6 +3,7 @@ import fsbasic from 'fs';
 import os from 'os';
 import path from 'path';
 import readline from 'readline';
+import { getBinaryDir } from './utils';
 
 export interface Config {
   /* Enables logging when set to true */
@@ -57,11 +58,15 @@ export async function createAnonConfigFile(options: Config): Promise<string> {
   const tempDataDirName = `anon-data-${Date.now()}`;
   const tempDataDirPath = path.join(os.tmpdir(), tempDataDirName);
 
+  const binaryDir = getBinaryDir();
+
   const configItems = [
     `DataDirectory ${tempDataDirPath}`,
     `SOCKSPort ${options.socksPort}`,
     `ORPort ${options.orPort}`,
     `ControlPort ${options.controlPort}`,
+    `GeoIPFile ${path.join(binaryDir, 'geoip')}`,
+    `GeoIPv6File ${path.join(binaryDir, 'geoip6')}`,
   ];
 
   await fs.writeFile(configPath, configItems.join('\n') + '\n');
