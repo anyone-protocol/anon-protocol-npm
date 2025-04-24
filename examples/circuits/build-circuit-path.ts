@@ -1,5 +1,6 @@
-import { Control } from "../src/control";
-import { Process } from "../src/process";
+import { Control } from "../../src/control";
+import { Process } from "../../src/process";
+import { selectPath } from "../path-selection";
 
 async function main() {
     console.log('Starting Anon...');
@@ -15,7 +16,7 @@ async function main() {
         // authenticate
         await control.authenticate();
 
-        const path = await control.selectPath(2, 'ca', 'us', 'gb');
+        const path = await selectPath(control, 2, 'ca', 'us', 'gb');
 
         console.log('Selected path:', path);
 
