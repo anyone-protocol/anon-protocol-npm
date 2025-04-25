@@ -33,6 +33,26 @@ const archMap: { [name: string]: string } = {
   'x64': 'amd64',
 };
 
+const geoipFiles = [
+  {
+    name: 'geoip',
+    url: 'https://raw.githubusercontent.com/anyone-protocol/ator-protocol/refs/heads/main/src/config/geoip',
+  },
+  {
+    name: 'geoip6',
+    url: 'https://raw.githubusercontent.com/anyone-protocol/ator-protocol/refs/heads/main/src/config/geoip6',
+  },
+];
+
+const downloadTextFile = async (url: string, outputPath: string) => {
+  const response = await axios.get(url, { responseType: 'stream' });
+  const writer = fs.createWriteStream(outputPath);
+  response.data.pipe(writer);
+  return new Promise<void>((resolve, reject) => {
+    writer.on('finish', resolve);
+    writer.on('error', reject);
+  });
+};
 
 const downloadFile = async (url: string, outputPath: string) => {
   try {
@@ -151,6 +171,13 @@ const makeExecutable = (file: string) => {
   for (const file of files) {
     await makeExecutable(path.join(extractDest, file));
     fs.promises.copyFile(path.join(extractDest, file), path.join(binaryDir, file));
+  }
+
+  // After downloading binary files
+  for (const geo of geoipFiles) {
+    const dest = path.join(binaryDir, geo.name);
+    console.log(`Downloading ${geo.name}...`);
+    await downloadTextFile(geo.url, dest);
   }
 
   console.log('Download complete');
