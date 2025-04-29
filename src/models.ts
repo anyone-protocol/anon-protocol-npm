@@ -128,13 +128,3 @@ export interface AddrMapEvent {
     mappedAddress: string;
     expires?: Date;
 }
-
-export interface PathState {
-    desiredLength: number;
-    desiredExitCountries: string[];
-    excludedRelays: string[];
-    excludedCountries: string[];
-    path: string[];
-    relays: RelayInfo[];
-    exit?: RelayInfo;
-}
