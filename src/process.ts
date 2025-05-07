@@ -15,6 +15,7 @@ export class Process {
     controlPort: 9051,
     binaryPath: undefined,
     autoTermsAgreement: false,
+    termsFilePath: undefined,
   };
   private process?: ChildProcess;
 

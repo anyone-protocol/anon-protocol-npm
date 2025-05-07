@@ -35,6 +35,10 @@ const args = parseArgs({
     agree: {
       type: 'boolean',
     },
+    termsFilePath: {
+      type: 'string',
+      short: 't',
+    },
   }
 });
 
@@ -45,6 +49,7 @@ const config: Config = {
   controlPort: 9051,
   binaryPath: args.values.binaryPath,
   autoTermsAgreement: args.values.agree === true,
+  termsFilePath: args.values.termsFilePath,
 };
 
 function parsePort(value: string | undefined): number | undefined {
@@ -64,6 +69,9 @@ if (controlPort !== undefined) config.controlPort = controlPort;
 
 const configFile = args.values.config;
 if (configFile !== undefined) config.configFile = configFile;
+
+const termsFilePath = args.values.termsFilePath;
+if (termsFilePath !== undefined) config.termsFilePath = termsFilePath;
 
 const anon = new Process(config);
 

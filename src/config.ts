@@ -29,6 +29,9 @@ export interface Config {
 
   /* Automatically agree to terms */
   autoTermsAgreement?: boolean;
+
+  /* Custom path for the terms agreement file */
+  termsFilePath?: string;
 }
 
 async function askForAgreement() {
@@ -74,7 +77,7 @@ export async function createAnonConfigFile(options: Config): Promise<string> {
   await fs.mkdir(tempDataDirPath, { recursive: true });
 
   const termsAgreementFileName = 'terms-agreement';
-  const target = path.join(process.cwd(), termsAgreementFileName);
+  const target = options.termsFilePath ?? path.join(process.cwd(), termsAgreementFileName);
 
   if (fsbasic.existsSync(target)) {
     const link = path.join(tempDataDirPath, termsAgreementFileName);
