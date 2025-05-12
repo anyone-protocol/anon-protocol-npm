@@ -25,7 +25,7 @@ interface Release {
 const platformMap: { [name: string]: string } = {
   'linux': 'linux',
   'darwin': 'macos',
-  'win32': 'windows',
+  'win32': 'windows-signed',
 };
 
 const archMap: { [name: string]: string } = {
