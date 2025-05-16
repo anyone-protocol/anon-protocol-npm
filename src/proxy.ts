@@ -5,6 +5,7 @@
 import { ChildProcess, spawn } from 'child_process';
 import { createProxyConfigFile } from './config';
 import { getBinaryPath } from './utils';
+import os from 'os';
 
 /**
  * Allows to run Anon Proxy with different configuration options
@@ -26,7 +27,12 @@ export class Proxy {
     }
 
     const configPath = await createProxyConfigFile(this.socksPort);
-    this.process = this.runBinary('anon-proxy', args, configPath, () => this.onStop());
+    const osArch = os.arch();
+    if (os.platform() === 'win32') {
+      this.process = this.runBinary(`anon-proxy_${osArch}`, args, configPath, () => this.onStop());
+    } else {
+      this.process = this.runBinary('anon-proxy', args, configPath, () => this.onStop());
+    }
   }
 
   /**
