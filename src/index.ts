@@ -7,3 +7,4 @@ export * from './socks';
 export * from './process-cli';
 export * from './proxy-cli';
 export * from './utils';
+export * from './errorTypes';

@@ -2,6 +2,11 @@ import { ChildProcess, spawn, execFile } from 'child_process';
 import { Config, createAnonConfigFile } from './config';
 import { getBinaryPath } from './utils';
 import chalk from 'chalk';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { AnonRunningError } from './errorTypes';
+
+const execAsync = promisify(exec);
 
 /**
  * Allows to run Anon client with different configuration options
@@ -62,11 +67,16 @@ export class Process {
   
     const configPath = await createAnonConfigFile(this.options);
     const binaryPath = this.options.binaryPath ?? getBinaryPath('anon');
-  
+    const isRunning = await Process.isAnonProcessRunning();
+    if (isRunning) {
+      throw new AnonRunningError('An Anon process is already running')
+    }
     return this.startWithTimeout(binaryPath, configPath);
   }
+  
 
   private startWithTimeout(binaryPath: string, configPath: string): Promise<void> {
+
     return new Promise((resolve, reject) => {
       const { cleanup, timeoutId } = this.setupTimeoutHandler(reject);
       try {
@@ -116,7 +126,56 @@ export class Process {
     });
   }
 
+  /**
+   * Checks if any Anon process is running on the system
+   * @returns {Promise<boolean>} Promise that resolves to true if any Anon process is running
+   */
+  public static async isAnonProcessRunning(): Promise<boolean> {
+    try {
+      const { stdout } = await execAsync('ps aux | grep anon | grep -v grep');
+      return stdout.trim().length > 0;
+    } catch (error) {
+      return false;
+    }
+  }
 
+  /**
+   * Kills all Anon processes on the system
+   * @returns {Promise<boolean>} Promise that resolves to true if any Anon process was killed
+   */
+  public static async killAnonProcess() {
+    try {
+      // First get the process IDs
+      const { stdout: psOutput } = await execAsync('ps aux | grep anon | grep -v grep');
+      const lines = psOutput.trim().split('\n');
+      
+      if (lines.length === 0 || (lines.length === 1 && lines[0].trim() === '')) {
+        return false;
+      }
+
+      // Extract PIDs and kill them
+      const killedPids: number[] = [];
+      for (const line of lines) {
+        const pid = parseInt(line.trim().split(/\s+/)[1], 10);
+        if (!isNaN(pid)) {
+          try {
+            process.kill(pid, 'SIGTERM');
+            killedPids.push(pid);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            console.log(`Killed process ${pid}`);
+          } catch (killError) {
+            console.error(`Failed to kill process ${pid}:`, killError);
+          }
+        }
+      }
+
+      console.log('Killed Anon processes with PIDs:', killedPids);
+      return killedPids.length > 0;
+    } catch (error) {
+      console.error('Error killing Anon processes:', error);
+      return false;
+    }
+  }
 
   /**
    * Stops Anon client
