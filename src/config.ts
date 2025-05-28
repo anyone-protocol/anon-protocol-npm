@@ -81,8 +81,8 @@ export async function createAnonConfigFile(options: Config): Promise<string> {
 
   if (fsbasic.existsSync(target)) {
     const link = path.join(tempDataDirPath, termsAgreementFileName);
-    await fs.symlink(target, link, 'file').catch((err) => {
-      console.error(`Error creating symlink: ${err}`);
+    await fs.copyFile(target, link).catch((err) => {
+      console.error(`Error copying terms agreement file: ${err}`);
     });
   } else {
     if (options.autoTermsAgreement) {
@@ -90,8 +90,8 @@ export async function createAnonConfigFile(options: Config): Promise<string> {
         console.error(`Error creating terms agreement file: ${err}`);
       });
       const link = path.join(tempDataDirPath, termsAgreementFileName);
-      await fs.symlink(target, link, 'file').catch((err) => {
-        console.error(`Error creating symlink: ${err}`);
+      await fs.copyFile(target, link).catch((err) => {
+        console.error(`Error copying terms agreement file: ${err}`);
       });
     } else {
       const agreed = await askForAgreement();
@@ -100,8 +100,8 @@ export async function createAnonConfigFile(options: Config): Promise<string> {
           console.error(`Error creating terms agreement file: ${err}`);
         });
         const link = path.join(tempDataDirPath, termsAgreementFileName);
-        await fs.symlink(target, link, 'file').catch((err) => {
-          console.error(`Error creating symlink: ${err}`);
+        await fs.copyFile(target, link).catch((err) => {
+          console.error(`Error copying terms agreement file: ${err}`);
         });
       } else {
         console.log('Agreement declined. Exiting...');
