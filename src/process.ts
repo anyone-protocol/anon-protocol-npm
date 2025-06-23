@@ -1,4 +1,5 @@
 import { ChildProcess, spawn, execFile } from 'child_process';
+import { EventEmitter } from 'events';
 import { Config, createAnonConfigFile } from './config';
 import { getBinaryPath } from './utils';
 import chalk from 'chalk';
@@ -9,9 +10,18 @@ import { AnonRunningError } from './errorTypes';
 const execAsync = promisify(exec);
 
 /**
+ * Bootstrap progress event interface
+ */
+export interface BootstrapProgressEvent {
+  percentage: number;
+  status: string;
+  timestamp: Date;
+}
+
+/**
  * Allows to run Anon client with different configuration options
  */
-export class Process {
+export class Process extends EventEmitter {
   private options: Config = {
     displayLog: false,
     useExecFile: false,
@@ -25,6 +35,7 @@ export class Process {
   private process?: ChildProcess;
 
   public constructor(options?: Partial<Config>) {
+    super();
     this.options = { ...this.options, ...options };
   }
 
@@ -64,6 +75,8 @@ export class Process {
     if (this.process !== undefined) {
       throw new Error('Anon process already started');
     }
+
+    this.emit('start', { timestamp: new Date() });
   
     const configPath = await createAnonConfigFile(this.options);
     const binaryPath = this.options.binaryPath ?? getBinaryPath('anon');
@@ -106,10 +119,30 @@ export class Process {
   }
 
   private handleBootstrapProgess(percentage: number, resolve: () => void, timeoutId: NodeJS.Timeout){
+
+    const bootstrapEvent: BootstrapProgressEvent = {
+      percentage,
+      status: this.getBootstrapStatus(percentage),
+      timestamp: new Date()
+    };
+    
+    this.emit('bootstrap-progress', bootstrapEvent);
+
     if (percentage === 100) {
       clearTimeout(timeoutId);
+      this.emit('bootstrap-complete', { timestamp: new Date() });
       resolve();
     }
+  }
+
+  private getBootstrapStatus(percentage: number): string {
+    if (percentage === 0) return 'Starting bootstrap';
+    if (percentage < 20) return 'Connecting to directory servers';
+    if (percentage < 40) return 'Loading network consensus';
+    if (percentage < 60) return 'Building circuits';
+    if (percentage < 80) return 'Testing circuits';
+    if (percentage < 100) return 'Finalizing connection';
+    return 'Bootstrap complete';
   }
 
   private attachProcessListeners(process: ChildProcess, cleanup: () => void, reject: (reason: Error) => void){
@@ -122,6 +155,9 @@ export class Process {
       if (code !== 0 && code !== null) {
         cleanup();
         reject(new Error(`Anon process exited with code ${code}`));
+      } else {
+        // Clear timeout on normal exit (including SIGTERM)
+        cleanup();
       }
     });
   }
@@ -196,7 +232,8 @@ export class Process {
 
   private onStop() {
     this.process = undefined;
-  }
+    this.emit('stop', { timestamp: new Date() });
+    }
 
   private runBinary(binaryPath: string, configPath: string, onStop?: VoidFunction, onBootstrap?: (percentage: number) => void): ChildProcess {
     let args: Array<string> = [];
