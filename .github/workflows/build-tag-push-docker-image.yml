@@ -1,4 +1,4 @@
-name: Builds, tags, and pushes @anyone-protocol/anyone-client to ghcr
+name: Builds, tags, and pushes @anyone-protocol/anyone-client docker image to ghcr
 
 on:
   push:
