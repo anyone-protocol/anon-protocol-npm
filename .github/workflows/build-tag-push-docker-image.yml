@@ -1,0 +1,44 @@
+name: Builds, tags, and pushes @anyone-protocol/anyone-client docker image to ghcr
+
+on:
+  push:
+    branches: main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+env:
+  IMAGE_NAME: anyone-client
+
+jobs:
+  build-tag-push-docker-image:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build image
+        run: |
+          docker build . \
+            --file Dockerfile \
+            --tag $IMAGE_NAME \
+            --label "runnumber=${GITHUB_RUN_ID}"
+
+      - name: Log in to registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+            -u $GITHUB_ACTOR \
+            --password-stdin
+
+      - name: Push image
+        run: |
+          IMAGE_ID=ghcr.io/${{ github.repository_owner }}/$IMAGE_NAME
+          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
+          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
+          [ "$VERSION" == "main" ] && VERSION=stage
+          echo IMAGE_ID=$IMAGE_ID
+          echo VERSION=$VERSION
+          docker tag $IMAGE_NAME $IMAGE_ID:${GITHUB_SHA}
+          docker push $IMAGE_ID:${GITHUB_SHA}

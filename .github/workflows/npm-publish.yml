@@ -1,4 +1,4 @@
-name: Publish to npm
+name: Publish @anyone-protocol/anyone-client to npm
 
 on:
   push:
@@ -10,24 +10,24 @@ jobs:
   publish-npm:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-          registry-url: 'https://registry.npmjs.org'
+      - name: Run Nomad job to publish @anyone-protocol/anyone-client to npm
+        env:
+          NOMAD_CACERT: operations/admin-ui-ca.crt
+          NOMAD_TOKEN: ${{ secrets.NOMAD_TOKEN_ANYONE_CLIENT_PUBLISH_NPM }}
+          NOMAD_ADDR: ${{ secrets.NOMAD_ADDR }}
+        run: |
+          # Determine VERSION from git tag, stripping ref and "v" prefix
+          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
+          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
+          
+          # Update job template with VERSION
+          sed \
+            -i 's/[[ .version ]]/'${VERSION}'/g' \
+            operations/publish-anyone-client-npm.hcl
 
-      - name: NPM clean install
-        run: npm ci
-      - name: Extract tag name
-        id: get_tag
-        run: echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-      - name: Publish to npm with beta tag
-        if: contains(steps.get_tag.outputs.TAG_NAME, 'beta')
-        run: npm publish --tag beta
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: Publish to npm with latest tag
-        if: "!contains(steps.get_tag.outputs.TAG_NAME, 'beta')"
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          curl \
+            -L https://releases.hashicorp.com/nomad/1.10.2/nomad_1.10.2_linux_amd64.zip \
+            -o nomad.zip
+          unzip nomad.zip
+
+          ./nomad job run operations/publish-anyone-client-npm.hcl
