@@ -15,7 +15,7 @@ job "publish-anyone-client-npm" {
       driver = "docker"
 
       config {
-        image = "ghcr.io/anyone-protocol/anyone-client:[[ .version ]]"
+        image = "ghcr.io/anyone-protocol/anyone-client:${VERSION}"
         mount {
           type = "bind"
           source = "local/entrypoint.sh"
@@ -29,6 +29,10 @@ job "publish-anyone-client-npm" {
             loki-external-labels = "container_name={{.Name}},job_name=${NOMAD_JOB_NAME}"
           }
         }
+      }
+
+      env {
+        VERSION="[[ .version ]]"
       }
 
       template {
