@@ -10,6 +10,7 @@ jobs:
   publish-npm:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v3
       - name: Run Nomad job to publish @anyone-protocol/anyone-client to npm
         env:
           NOMAD_CACERT: operations/admin-ui-ca.crt
