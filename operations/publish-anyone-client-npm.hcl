@@ -22,13 +22,13 @@ job "publish-anyone-client-npm" {
           target = "/usr/src/app/entrypoint.sh"
           readonly = true
         }
-        logging {
-          type = "loki"
-          config {
-            loki-url = "${LOKI_URL}"
-            loki-external-labels = "container_name={{.Name}},job_name=${NOMAD_JOB_NAME}"
-          }
-        }
+        # logging {
+        #   type = "loki"
+        #   config {
+        #     loki-url = "${LOKI_URL}"
+        #     loki-external-labels = "container_name={{.Name}},job_name=${NOMAD_JOB_NAME}"
+        #   }
+        # }
       }
 
       env {
