@@ -23,7 +23,7 @@ jobs:
           
           # Update job template with VERSION
           sed \
-            -i 's/[[ .version ]]/'${VERSION}'/g' \
+            -i 's/\[\[ .version \]\]/'${VERSION}'/g' \
             operations/publish-anyone-client-npm.hcl
 
           curl \
