@@ -16,10 +16,17 @@ job "publish-anyone-client-npm" {
 
       config {
         image = "ghcr.io/anyone-protocol/anyone-client:${VERSION}"
+        entrypoint = [ "/usr/src/app/entrypoint.sh" ]
         mount {
           type = "bind"
           source = "local/entrypoint.sh"
           target = "/usr/src/app/entrypoint.sh"
+          readonly = true
+        }
+        mount {
+          type = "bind"
+          source = "secrets/.npmrc"
+          target = "/usr/src/app/.npmrc"
           readonly = true
         }
         # logging {
@@ -59,10 +66,10 @@ job "publish-anyone-client-npm" {
       template {
         data = <<-EOH
         {{ with secret "kv/operations/publish-anyone-client-npm" }}
-        NODE_AUTH_TOKEN="{{ .Data.data.NPM_TOKEN }}"
+        //registry.npmjs.org/:_authToken="{{ .Data.data.NPM_TOKEN }}"
         {{ end }}
         EOH
-        destination = "secrets/.env"
+        destination = "secrets/.npmrc"
       }
 
       template {
