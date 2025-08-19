@@ -5,7 +5,8 @@
   "main": "out/index.js",
   "bin": {
     "anyone-client": "./out/process-cli.js",
-    "anyone-proxy": "./out/proxy-cli.js"
+    "anyone-proxy": "./out/proxy-cli.js",
+    "anonssh": "./out/anonssh-cli.js"
   },
   "scripts": {
     "build": "tsc",
