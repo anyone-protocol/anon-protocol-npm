@@ -15,20 +15,31 @@ job "publish-anyone-client-npm" {
       driver = "docker"
 
       config {
-        image = "ghcr.io/anyone-protocol/anyone-client:[[ .version ]]"
+        image = "ghcr.io/anyone-protocol/anyone-client:${VERSION}"
+        entrypoint = [ "/usr/src/app/entrypoint.sh" ]
         mount {
           type = "bind"
           source = "local/entrypoint.sh"
           target = "/usr/src/app/entrypoint.sh"
           readonly = true
         }
-        logging {
-          type = "loki"
-          config {
-            loki-url = "${LOKI_URL}"
-            loki-external-labels = "container_name={{.Name}},job_name=${NOMAD_JOB_NAME}"
-          }
+        mount {
+          type = "bind"
+          source = "secrets/.npmrc"
+          target = "/usr/src/app/.npmrc"
+          readonly = true
         }
+        # logging {
+        #   type = "loki"
+        #   config {
+        #     loki-url = "${LOKI_URL}"
+        #     loki-external-labels = "container_name={{.Name}},job_name=${NOMAD_JOB_NAME}"
+        #   }
+        # }
+      }
+
+      env {
+        VERSION="[[ .version ]]"
       }
 
       template {
@@ -55,10 +66,10 @@ job "publish-anyone-client-npm" {
       template {
         data = <<-EOH
         {{ with secret "kv/operations/publish-anyone-client-npm" }}
-        NODE_AUTH_TOKEN="{{ .Data.data.NPM_TOKEN }}"
+        //registry.npmjs.org/:_authToken="{{ .Data.data.NPM_TOKEN }}"
         {{ end }}
         EOH
-        destination = "secrets/.env"
+        destination = "secrets/.npmrc"
       }
 
       template {
