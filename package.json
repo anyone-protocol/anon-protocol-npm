@@ -1,11 +1,12 @@
 {
   "name": "@anyone-protocol/anyone-client",
-  "version": "1.1.3",
+  "version": "1.1.7-beta.0",
   "description": "",
   "main": "out/index.js",
   "bin": {
     "anyone-client": "./out/process-cli.js",
-    "anyone-proxy": "./out/proxy-cli.js"
+    "anyone-proxy": "./out/proxy-cli.js",
+    "anonssh": "./out/anonssh-cli.js"
   },
   "scripts": {
     "build": "tsc",
