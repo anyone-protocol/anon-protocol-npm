@@ -135,11 +135,11 @@ Examples:
   };
 }
 
-function runSSH(host: string, port: number, user?: string, sshArgs: string[] = [], configFile?: string): Promise<void> {
+function runSSH(host: string, socksPort: number, user?: string, sshArgs: string[] = [], configFile?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const sshCommand = 'ssh';
     const sshArgsArray = [
-      '-o', `ProxyCommand=nc -X5 -x 127.0.0.1:${port} %h %p`,
+      '-o', `ProxyCommand=nc -X5 -x 127.0.0.1:${socksPort} %h %p`,
       ...(configFile ? ['-F', configFile] : []),
       // If config file is used, let SSH config handle everything
       // If no config file, use user@host format if user is specified
@@ -180,6 +180,9 @@ function runSSH(host: string, port: number, user?: string, sshArgs: string[] = [
   });
 }
 
+// Global variable to track the anon instance for signal handling
+let anonInstance: Process | null = null;
+
 async function main() {
   try {
     const args = parseAnonSSHArgs();
@@ -197,6 +200,7 @@ async function main() {
 
     console.log('Starting Anon proxy client...');
     const anon = new Process(config);
+    anonInstance = anon; // Store reference for signal handlers
 
     // Start Anon and wait for bootstrap
     await anon.start();
@@ -205,11 +209,17 @@ async function main() {
     // Run SSH through the proxy
     const socksPort = anon.getSOCKSPort();
     try {
-      await runSSH(args.host, socksPort, args.user, args.sshArgs, args.config);
+      // Add SSH port to arguments if specified
+      const sshArgs = [...(args.sshArgs || [])];
+      if (args.port !== undefined) {
+        sshArgs.unshift('-p', args.port.toString());
+      }
+      await runSSH(args.host, socksPort, args.user, sshArgs, args.config);
     } catch (error) {
       console.error('Error:', error instanceof Error ? error.message : error);
     } finally {
       await anon.stop();
+      anonInstance = null;
     }
 
   } catch (error) {
@@ -219,7 +229,19 @@ async function main() {
 }
 
 // Handle graceful shutdown
-function gracefulShutdown() {
+async function gracefulShutdown() {
+  console.log('\nReceived interrupt signal, shutting down...');
+  
+  if (anonInstance) {
+    try {
+      await anonInstance.stop();
+      console.log('Anon process stopped');
+    } catch (error) {
+      console.error('Error stopping Anon process:', error);
+    }
+    anonInstance = null;
+  }
+  
   process.exit(0);
 }
 
