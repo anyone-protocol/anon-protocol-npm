@@ -169,7 +169,7 @@ export class Process extends EventEmitter {
   public static async isAnonProcessRunning(): Promise<boolean> {
     try {
       // Look for actual anon binary processes, not our Node.js scripts
-      const { stdout } = await execAsync('ps aux | grep -E "(anon |anon-proxy)" | grep -v grep | grep -v "anonssh-cli.js" | grep -v "process-cli.js"');
+      const { stdout } = await execAsync('ps aux | grep -E "(/anon$ |anon-proxy)" | grep -v grep | grep -v "anonssh-cli.js" | grep -v "process-cli.js"');
       return stdout.trim().length > 0;
     } catch (error) {
       return false;
@@ -183,7 +183,7 @@ export class Process extends EventEmitter {
   public static async killAnonProcess() {
     try {
       // First get the process IDs - look for actual anon binary processes, not our Node.js scripts
-      const { stdout: psOutput } = await execAsync('ps aux | grep -E "(anon |anon-proxy)" | grep -v grep | grep -v "anonssh-cli.js" | grep -v "process-cli.js"');
+      const { stdout: psOutput } = await execAsync('ps aux | grep -E "(/anon$ |anon-proxy)" | grep -v grep | grep -v "anonssh-cli.js" | grep -v "process-cli.js"');
       const lines = psOutput.trim().split('\n');
       
       if (lines.length === 0 || (lines.length === 1 && lines[0].trim() === '')) {
