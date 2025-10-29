@@ -1,7 +1,4 @@
-import { Control } from '../src/control';
-import { Process } from "../src/process";
-import { Socks } from "../src/socks";
-import { EventType } from '../src/models';
+import { Control, Process, Socks, EventType } from '../src';
 
 async function main() {
     console.log('Starting Anon...');

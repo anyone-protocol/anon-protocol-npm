@@ -1,5 +1,4 @@
-import { Flag, RelayInfo } from "../src/models";
-import { Control } from "../src/control";
+import { Flag, RelayInfo, Control } from "../src";
 
 interface PathState {
     desiredLength: number;

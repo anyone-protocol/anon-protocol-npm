@@ -1,11 +1,10 @@
-import { Event, StreamEvent, AddrMapEvent, EventType } from './models';
-import { CircuitStatus, Relay, RelayInfo, ExtendCircuitOptions, Purpose, Flag } from './models';
+import { AddrMapEvent, CircEvent, CircHop, CircStatus, CircuitStatus, Event, EventType, ExtendCircuitOptions, Flag, Purpose, Relay, RelayInfo, StreamEvent } from './models';
 import * as net from 'net';
-import { AsyncQueue, AsyncEvent } from './queue';
+import { AsyncEvent, AsyncQueue } from './queue';
 import { Buffer } from 'buffer';
 
 export class Control {
-    private client: net.Socket;
+    private readonly client: net.Socket;
     private isAuthenticated: boolean = false;
     private eventListeners: Map<EventType, Function[]> = new Map();
 
@@ -121,7 +120,7 @@ export class Control {
 
     async msg(message: string): Promise<string> {
         // Acquire message lock
-        await this.msgLock.push();
+        this.msgLock.push();
 
         try {
             // Flush any old responses/errors in the reply queue
@@ -129,8 +128,7 @@ export class Control {
                 const response = await this.replyQueue.pop();
 
                 if (response.includes('SocketClosed')) {
-                    // This is expected sometimes
-                    continue;
+                    console.info('Socket was closed:', response);
                 } else if (response.includes('ProtocolError')) {
                     console.info('Tor provided a malformed message:', response);
                 } else if (response.includes('ControllerError')) {
@@ -169,19 +167,19 @@ export class Control {
     }
 
     async extendCircuit(options: ExtendCircuitOptions = {}): Promise<number> {
-        const circuitId: number = options.circuitId ?? 0;
+        let circuitId: number = options.circuitId ?? 0;
         const serverSpecs: string[] = options.serverSpecs ?? [];
         const purpose: Purpose = options.purpose ?? 'general';
         const awaitBuild: boolean = options.awaitBuild ?? false;
-        
-        var queue;
-        var eventListener: Function | null = null;
+
+        let queue;
+        let eventListener: Function | null = null;
         if (awaitBuild) {
-            queue = new AsyncQueue<string>();
+            queue = new AsyncQueue<CircEvent>();
 
             eventListener = (event: Event) => {
                 if (event.type === EventType.CIRC) {
-                    queue.push(event.data!);
+                    queue.push(event as CircEvent);
                 }
             };
             await this.addEventListener(eventListener, EventType.CIRC);
@@ -203,22 +201,27 @@ export class Control {
             throw new Error('Failed to extend circuit');
         }
 
-        const circId = response.split(' ')[2];
+        if (circuitId === 0) {
+            circuitId = parseInt(response.split(' ')[2], 10);
+        }
 
         if (awaitBuild) {
-            var received = false;
+            let received = false;
 
             let numb = 0;
 
             while (!received) {
                 const event = await queue!.pop();
-                const id = event.split(' ')[0];
 
-                if (id === circId) {
+                if (event.circId === circuitId) {
                     console.log('Received event', event);
                     numb++;
-                    if (numb >= serverSpecs.length) { // todo - fix this (we recevie event on each extended hop) 
+                    if (numb >= serverSpecs.length && (event.status == CircStatus.EXTENDED || event.status == CircStatus.BUILT)) {
                         received = true;
+                    }
+
+                    if (event.status === CircStatus.FAILED || event.status === CircStatus.CLOSED) {
+                        throw new Error(`Circuit build failed: ${event.status} (${event.reason})`);
                     }
                 }
             }
@@ -226,7 +229,7 @@ export class Control {
             await this.removeEventListener(eventListener!);
         }
 
-        return parseInt(circId, 10); // circuitId
+        return circuitId;
     }
 
     async closeCircuit(circuitId: number): Promise<void> {
@@ -342,6 +345,10 @@ export class Control {
     }
 
     async attachStream(streamId: number, circuitId: number, exitingHop?: number): Promise<void> {
+        if (!this.client || this.client.destroyed || !this.client.writable) {
+            throw new Error('SocketClosed');
+        }
+
         let command = `ATTACHSTREAM ${streamId} ${circuitId}`;
 
         if (exitingHop !== undefined) {
@@ -351,15 +358,17 @@ export class Control {
         const response = await this.msg(command);
 
         if (!response.startsWith('250')) {
-            if (response.startsWith('552')) {
-                throw new Error(`InvalidRequest: ${response}`);
-            } else if (response.startsWith('551')) {
-                throw new Error(`OperationFailed: ${response}`);
-            } else if (response.startsWith('555')) {
-                throw new Error(`UnsatisfiableRequest: ${response}`);
-            } else {
-                throw new Error(`ProtocolError: Unexpected ATTACHSTREAM response: ${response}`);
+            const msg = response.trim();
+            if (msg.startsWith('555')) {
+                throw new Error(`AttachFailed: circuit ${circuitId} unsatisfiable (${msg})`);
             }
+            if (msg.includes('not found') || msg.includes('closed') || msg.startsWith('551')) {
+                throw new Error(`AttachFailed: circuit ${circuitId} unavailable (${msg})`);
+            }
+            if (msg.startsWith('552')) {
+                throw new Error(`InvalidRequest: ${msg}`);
+            }
+            throw new Error(`ProtocolError: Unexpected ATTACHSTREAM response: ${msg}`);
         }
     }
 
@@ -374,7 +383,7 @@ export class Control {
         const eventTypes = Array.from(this.eventListeners?.keys() || []);
 
         try {
-            var isOk = await this.setEvents(eventTypes);
+            let isOk = await this.setEvents(eventTypes);
             if (isOk) {
                 setEvents.push(...eventTypes);
             } else {
@@ -417,7 +426,7 @@ export class Control {
 
     async addEventListener(callback: Function, ...eventTypes: EventType[]): Promise<void> {
         for (const eventType of eventTypes) {
-            var callbacks: Function[] = this.eventListeners.get(eventType) || [];
+            const callbacks: Function[] = this.eventListeners.get(eventType) || [];
             callbacks.push(callback);
             this.eventListeners.set(eventType, callbacks);
         }
@@ -426,7 +435,7 @@ export class Control {
     }
 
     async removeEventListener(callback: Function): Promise<void> {
-        var eventTypesChanged = false;
+        let eventTypesChanged = false;
 
         for (const [eventType, callbacks] of this.eventListeners.entries()) {
             const index = callbacks.indexOf(callback);
@@ -461,8 +470,10 @@ export class Control {
                 for (const line of lines) {
                     if (!statusCode) {
                         if (!/^\d{3}[ +\-]/.test(line)) {
-                            cleanup();
-                            return reject(new Error(`Malformed initial line: '${line}'`));
+                            // Instead of reject, treat as stray async/event content
+                            // Push it to eventQueue so it’s handled in eventLoop
+                            this.eventQueue.push(line.trim());
+                            continue; // wait for a real status line
                         }
                         statusCode = line.substring(0, 3);
                         divider = line.charAt(3);
@@ -482,7 +493,6 @@ export class Control {
                     if (inDataBlock) {
                         if (line === '.') {
                             inDataBlock = false;
-                            continue;
                         }
                     } else {
                         switch (divider) {
@@ -569,7 +579,7 @@ export class Control {
                     }
                 }
 
-                const event: StreamEvent = {
+                return {
                     type: eventType,
                     streamId: parseInt(streamId, 10),
                     status,
@@ -580,19 +590,51 @@ export class Control {
                     reason: keywordArgs['REASON'] || null,
                     remoteReason: keywordArgs['REMOTE_REASON'] || null,
                     source: keywordArgs['SOURCE'] || null
-                };
-
-                return event;
+                } as StreamEvent;
 
             case EventType.ADDRMAP:
                 const [address, mappedAddress, expires] = parts.slice(1);
-                const addrMapEvent: AddrMapEvent = {
+
+                return {
                     type: eventType,
                     address,
                     mappedAddress,
                     expires: expires ? new Date(expires) : undefined
-                };
-                return addrMapEvent;
+                } as AddrMapEvent;
+
+            case EventType.CIRC: {
+                const [, idStr, status, ...rest] = parts;
+                const circId = parseInt(idStr, 10);
+
+                const path: CircHop[] = [];
+                const kv: Record<string, string> = {};
+
+                let i = 0;
+                for (; i < rest.length; i++) {
+                    const tok = rest[i];
+                    if (!tok.startsWith('$')) break;
+                    for (const hop of tok.split(',')) {
+                        const [fp, nick] = hop.split('~');
+                        path.push({fingerprint: fp.replace(/^\$/, ''), nickname: nick});
+                    }
+                }
+                for (; i < rest.length; i++) {
+                    const [k, v] = rest[i].split('=');
+                    if (k && v !== undefined) kv[k.toUpperCase()] = v;
+                }
+
+                return {
+                    type: EventType.CIRC,
+                    circId,
+                    status: status as CircStatus,
+                    path,
+                    buildFlags: kv['BUILD_FLAGS'] ? kv['BUILD_FLAGS'].split(',') : undefined,
+                    purpose: kv['PURPOSE'],
+                    reason: kv['REASON'],
+                    remoteReason: kv['REMOTE_REASON'],
+                    timeCreated: kv['TIME_CREATED'] ? new Date(kv['TIME_CREATED'] + 'Z') : undefined
+                } as CircEvent;
+            }
 
             default:
                 return {
@@ -759,8 +801,7 @@ export class Control {
             }
 
             try {
-                const country = await this.getCountry(relay.ip);
-                relay.country = country;
+                relay.country = await this.getCountry(relay.ip);
             } catch (err) {
                 console.warn(`Failed to get country for ${relay.ip}:`, err);
             }

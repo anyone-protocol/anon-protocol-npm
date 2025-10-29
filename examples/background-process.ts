@@ -1,7 +1,4 @@
-import { Control } from '../src/control';
-import { ExtendCircuitOptions, StreamEvent, EventType, Flag } from '../src/models';
-import { Process } from "../src/process";
-import { VPNConfig } from '../src/models';
+import { Control, ExtendCircuitOptions, StreamEvent, EventType, Flag, Process, VPNConfig } from '../src';
 
 const config: VPNConfig = {
     routings: [
