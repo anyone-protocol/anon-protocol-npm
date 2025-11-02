@@ -1,10 +1,10 @@
-import { Process, BootstrapProgressEvent } from '../src/process';
+import { Process, BootstrapProgressEvent } from '../src';
 
 async function main() {
     console.log('Starting Anon with event listeners...');
     
     // Create Anon instance
-    const anon = new Process({ displayLog: false, socksPort: 9050, controlPort: 9051 });
+    const anon = new Process({ displayLog: true, socksPort: 9050, controlPort: 9051 });
     
     // Listen to start event
     anon.on('start', (event) => {

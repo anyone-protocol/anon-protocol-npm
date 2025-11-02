@@ -128,3 +128,29 @@ export interface AddrMapEvent {
     mappedAddress: string;
     expires?: Date;
 }
+
+export enum CircStatus {
+    LAUNCHED = 'LAUNCHED',
+    BUILT = 'BUILT',
+    GUARD_WAIT = 'GUARD_WAIT',
+    EXTENDED = 'EXTENDED',
+    FAILED = 'FAILED',
+    CLOSED = 'CLOSED'
+}
+
+export interface CircHop {
+    fingerprint: string;
+    nickname?: string;
+}
+
+export interface CircEvent extends Event {
+    type: EventType.CIRC;
+    circId: number;
+    status: CircStatus;
+    path: CircHop[];
+    buildFlags?: string[];
+    purpose?: string;
+    reason?: string;
+    remoteReason?: string;
+    timeCreated?: Date;
+}

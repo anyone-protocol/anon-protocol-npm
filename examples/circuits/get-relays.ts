@@ -1,5 +1,4 @@
-import { Control } from "../../src/control";
-import { Process } from "../../src/process";
+import { Control, Process } from "../../src";
 
 async function main() {
     console.log('Starting Anon...');

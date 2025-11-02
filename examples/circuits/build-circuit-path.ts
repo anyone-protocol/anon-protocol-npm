@@ -1,5 +1,4 @@
-import { Control } from "../../src/control";
-import { Process } from "../../src/process";
+import { Control, Process } from "../../src";
 import { selectPath } from "../path-selection";
 
 async function main() {

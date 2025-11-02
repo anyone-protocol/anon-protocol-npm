@@ -1,9 +1,4 @@
-import { Process } from "../src/process";
-import { Socks } from "../src/socks";
-
-import { Control } from '../src/control';
-import { ExtendCircuitOptions, StreamEvent, EventType } from '../src/models';
-import { VPNConfig, Flag } from '../src/models';
+import { Process , Socks, Control, ExtendCircuitOptions, StreamEvent, EventType, VPNConfig, Flag } from "../src";
 
 const config: VPNConfig = {
     routings: [
