@@ -20,7 +20,7 @@ async function main() {
             console.log('Event received:', event);
         };
 
-        control.addEventListener(eventListener, EventType.INFO, EventType.NOTICE, EventType.WARN);
+        await control.addEventListener(eventListener, EventType.INFO, EventType.NOTICE, EventType.WARN);
 
         // sleep for a while to allow events to be received
         await new Promise(resolve => setTimeout(resolve, 1000));

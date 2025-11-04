@@ -127,6 +127,8 @@ export interface AddrMapEvent {
     address: string;
     mappedAddress: string;
     expires?: Date;
+    streamId?: number;
+    cached?: boolean;
 }
 
 export enum CircStatus {
