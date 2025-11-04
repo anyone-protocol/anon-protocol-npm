@@ -39,15 +39,30 @@ export class Control {
         }
     }
 
+    /**
+     *  Request the server to inform the client about interesting events.
+     *  The syntax is:
+     *      "SETEVENTS" [SP "EXTENDED"] *(SP EventCode) CRLF
+     *      EventCode = 1*(ALPHA / "_")  (see section 4.1.x for event types)
+     *  Any events not listed in the SETEVENTS line are turned off;
+     *  thus, sending SETEVENTS with an empty body turns off all event reporting.
+     *  The server responds with a 250 OK reply on success,
+     *  and a 552 Unrecognized event reply if one of the event codes isn’t recognized.
+     *  (On error, the list of active event codes isn’t changed.)
+     *  If the flag string “EXTENDED” is provided,
+     *  Anon may provide extra information with events for this connection;
+     *
+     * @param events Array of EventType to set
+     * @returns {Promise<boolean>} true if successful, false otherwise
+     */
     async setEvents(events: EventType[]): Promise<boolean> {
         const command = `SETEVENTS ${events.join(' ')}`;
-
         const response = await this.msg(command);
 
         if (response.startsWith('250 OK')) {
             return true;
         } else {
-            console.error('Error: ', response);
+            console.error(`Failed to set events [${events.join(', ')}]: ${response}`);
             return false;
         }
     }
@@ -118,47 +133,66 @@ export class Control {
         return circuit;
     }
 
-    async msg(message: string): Promise<string> {
-        // Acquire message lock
-        this.msgLock.push();
-
+    async msg(message: string, expectOk: boolean = false): Promise<string> {
+        this.msgLock.push(); // serialize command → reply
         try {
-            // Flush any old responses/errors in the reply queue
+            // --- Drain any leftover replies from prior calls ---
+            let dropped = 0;
             while (!this.replyQueue.isEmpty) {
-                const response = await this.replyQueue.pop();
+                const stale = await this.replyQueue.pop();
+                dropped++;
+                console.warn(`[AnonCtrl] Dropping stale reply message:\n   ${stale}`);
+            }
 
-                if (response.includes('SocketClosed')) {
-                    console.info('Socket was closed:', response);
-                } else if (response.includes('ProtocolError')) {
-                    console.info('Tor provided a malformed message:', response);
-                } else if (response.includes('ControllerError')) {
-                    console.info('Socket experienced a problem:', response);
-                } else {
-                    console.info('Failed to deliver a response:', response);
+            if (dropped > 0) {
+                console.warn(`[AnonCtrl] Dropped ${dropped} unconsumed message(s) before sending "${message}"`);
+            }
+
+            // --- Send the command ---
+            this.client.write(`${message}${CRLF}`);
+
+            // --- Await one full reply ---
+            let raw = await this.replyQueue.pop();
+
+            // --- Handle transport-level errors bubbled from readerLoop ---
+            if (raw.startsWith('ControllerError:')) {
+                const msg = raw.slice('ControllerError:'.length).trim() || 'ControllerError';
+                if (!this.client || this.client.destroyed) {
+                    this.end?.();
+                    throw new Error('SocketClosed');
+                }
+                throw new Error(msg);
+            }
+
+            // --- Handle annotated 5xx replies from readerLoop ---
+            if (raw.startsWith('ReplyError:')) {
+                const idx = raw.indexOf(CRLF);
+                if (idx >= 0) {
+                    const annotated = raw.slice(0, idx);
+                    console.warn(`[AnonCtrl] ReplyError received: ${annotated}`);
+                    raw = raw.slice(idx + CRLF.length);
                 }
             }
 
-            // Send the message
-            this.client.write(`${message}\r\n`);
-
-            // Wait for reply
-            const response = await this.replyQueue.pop();
-
-            // In a real implementation, you'd parse response objects here
-            if (response.startsWith('5')) {
-                console.error('Error: ', response.substring(0, 100));
+            // --- Optionally enforce OK replies (2xx) ---
+            if (expectOk) {
+                const { code, text } = parseFirstStatusCode(raw);
+                if (!Number.isFinite(code) || !isOkCode(code)) {
+                    console.error(`[AnonCtrl] Command failed (${code || '???'}): ${text}`);
+                    throw new Error(`Command failed (${Number.isFinite(code) ? code : '???'}): ${text}`);
+                }
             }
 
-            return response;
+            console.debug(`[AnonCtrl] → ${message}`);
+            return raw;
         } catch (err) {
             if (!this.client || this.client.destroyed) {
-                this.end();
+                this.end?.();
                 throw new Error('SocketClosed');
             }
-
             throw err;
         } finally {
-            await this.msgLock.pop(); // Release lock
+            await this.msgLock.pop();
         }
     }
 
@@ -454,77 +488,153 @@ export class Control {
         }
     }
 
-    private recv(): Promise<string> {
+    /**
+     *  Reads a single complete Tor *reply* from the control socket.
+     *  - Handles 250/552 with -, +, and dot-terminated blocks
+     *  - Routes async events (650 / 650- / 650+ ... '.') to eventQueue
+     *  - Times out safely and cleans listeners
+     *
+     * * @param {number} timeoutMs - Timeout in milliseconds
+     * * @returns {Promise<string>} - Resolves with the complete reply string
+     */
+    private readReply(timeoutMs: number = 10000): Promise<string> {
         return new Promise((resolve, reject) => {
+            // -------------------------------
+            // [1] Per-call state
+            // -------------------------------
             let buffer = '';
-            let rawLines: string[] = [];
-            let statusCode: string | null = null;
-            let divider: string | null = null;
-            let inDataBlock = false;
 
-            const onData = (data: Buffer) => {
-                buffer += data.toString();
-                let lines = buffer.split('\r\n');
+            // Reply assembly
+            let replyStatus: string | null = null;
+            let replyDivider: ' ' | '+' | '-' | null = null;
+            let inReplyDataBlock = false;
+            const replyLines: string[] = [];
+
+            // Event assembly
+            let inEventDataBlock = false;
+            let inEventContinuation = false;
+            const eventLines: string[] = [];
+
+            // -------------------------------
+            // [2] Helpers
+            // -------------------------------
+            const tidy = () => {
+                this.client.off('data', onData);
+                this.client.off('error', onError);
+                clearTimeout(timer);
+            };
+
+            const pushEventNow = () => {
+                if (!eventLines.length) return;
+                this.eventQueue.push(eventLines.join('\r\n'));
+                this.eventNotice?.set?.();
+                eventLines.length = 0;
+                inEventDataBlock = false;
+                inEventContinuation = false;
+            };
+
+            const onError = (err: Error) => {
+                tidy();
+                reject(err);
+            };
+
+            const timer = setTimeout(() => {
+                tidy();
+                reject(new Error('Timeout while waiting for Tor reply'));
+            }, timeoutMs);
+
+            // -------------------------------
+            // [3] Main data handler
+            // -------------------------------
+            const onData = (chunk: Buffer) => {
+                buffer += chunk.toString();
+                const lines = buffer.split('\r\n');
                 buffer = lines.pop() || '';
 
-                for (const line of lines) {
-                    if (!statusCode) {
-                        if (!/^\d{3}[ +\-]/.test(line)) {
-                            // Instead of reject, treat as stray async/event content
-                            // Push it to eventQueue so it’s handled in eventLoop
-                            this.eventQueue.push(line.trim());
-                            continue; // wait for a real status line
-                        }
-                        statusCode = line.substring(0, 3);
-                        divider = line.charAt(3);
+                for (const raw of lines) {
+                    const line = raw;
+
+                    // --- [a] Handle asynchronous events ---
+                    if (!replyStatus && line.startsWith('650')) {
+                        const sep = line.charAt(3);
+                        const rest = line.slice(4);
+
+                        if (sep === ' ') { eventLines.push(rest); pushEventNow(); continue; }
+                        if (sep === '+') { inEventDataBlock = true; eventLines.push(rest); continue; }
+                        if (sep === '-') { inEventContinuation = true; eventLines.push(rest); continue; }
+
+                        eventLines.push(rest);
+                        pushEventNow();
+                        continue;
                     }
 
-                    if (line.startsWith('..')) {
-                        rawLines.push(line.slice(1));
-                    } else {
-                        rawLines.push(line);
-                    }
-
-                    if (line.startsWith(statusCode + ' ')) {
-                        cleanup();
-                        return resolve(rawLines.join('\r\n'));
-                    }
-
-                    if (inDataBlock) {
+                    // --- [b] Handle event data blocks (650+) ---
+                    if (inEventDataBlock) {
                         if (line === '.') {
-                            inDataBlock = false;
+                            inEventDataBlock = false;
+                            pushEventNow();
+                        } else {
+                            eventLines.push(line.startsWith('..') ? line.slice(1) : line);
                         }
+                        continue;
+                    }
+
+                    // --- [c] Handle event continuations (650-) ---
+                    if (inEventContinuation) {
+                        if (line.startsWith('650-')) { eventLines.push(line.slice(4)); continue; }
+                        if (line.startsWith('650 ')) { eventLines.push(line.slice(4)); pushEventNow(); continue; }
+
+                        pushEventNow(); // unexpected line ends continuation
+                        // fall through to possible reply handling
+                    }
+
+                    // --- [d] First reply status line (e.g., 250 OK, 552 ...) ---
+                    if (!replyStatus) {
+                        const m = line.match(/^(\d{3})([ +\-])(.*)$/);
+                        if (!m) continue; // ignore non-status noise
+                        replyStatus = m[1];
+                        replyDivider = m[2] as ' ' | '+' | '-';
+                    }
+
+                    // --- [e] Collect reply lines ---
+                    if (inReplyDataBlock && line.startsWith('..')) {
+                        replyLines.push(line.slice(1));
                     } else {
-                        switch (divider) {
-                            case ' ':
-                                cleanup();
-                                return resolve(rawLines.join('\r\n'));
+                        replyLines.push(line);
+                    }
 
-                            case '+':
-                                inDataBlock = true;
-                                break;
+                    // --- [f] Terminal reply ---
+                    if (line.startsWith(replyStatus + ' ')) {
+                        tidy();
+                        return resolve(replyLines.join('\r\n'));
+                    }
 
-                            case '-':
-                                continue
+                    // --- [g] Manage block/continuation ---
+                    if (inReplyDataBlock) {
+                        if (line === '.') inReplyDataBlock = false;
+                        continue;
+                    }
 
-                            default:
-                                cleanup();
-                                return reject(new Error(`Unknown divider: '${divider}' in line: ${line}`));
-                        }
+                    switch (replyDivider) {
+                        case ' ':
+                            tidy();
+                            return resolve(replyLines.join('\r\n'));
+                        case '+':
+                            inReplyDataBlock = true;
+                            break;
+                        case '-':
+                            // keep looping for more status lines
+                            break;
+                        default:
+                            tidy();
+                            return reject(new Error(`Unknown reply divider '${replyDivider}' in line: ${line}`));
                     }
                 }
             };
 
-            const onError = (err: Error) => {
-                cleanup();
-                reject(err);
-            };
-
-            const cleanup = () => {
-                this.client.off('data', onData);
-                this.client.off('error', onError);
-            };
-
+            // -------------------------------
+            // [4] Register listeners
+            // -------------------------------
             this.client.on('data', onData);
             this.client.once('error', onError);
         });
@@ -543,84 +653,115 @@ export class Control {
     private async readerLoop(): Promise<void> {
         while (this.client && !this.client.destroyed) {
             try {
-                const message = await this.recv();
+                // read one complete reply (events already routed inside readReply)
+                const raw = await this.readReply();
 
-                if (message.startsWith('650')) {
-                    // Asynchronous event
-                    this.eventQueue.push(message.substring(4));
-                    this.eventNotice.set();
+                // soft-parse the first status line to detect 5xx
+                const { code, text } = parseFirstStatusCode(raw);
+
+                if (!Number.isNaN(code) && !isOkCode(code) && code >= 500) {
+                    // Protocol error reply (e.g., 552 Unrecognized event)
+                    // Log for observability; still push raw so msg() can decide what to do.
+                    // (Optional) also push an annotated line to aid older callers.
+                    // console.warn(`[TorCtrl] ReplyError ${code}: ${text}`);
+                    this.replyQueue.push(`ReplyError: ${code} ${text}${CRLF}${raw}`);
                 } else {
-                    // Synchronous reply
-                    this.replyQueue.push(message);
+                    // Normal 2xx (or unparseable but non-fatal) reply
+                    this.replyQueue.push(raw);
                 }
             } catch (err: any) {
-                this.replyQueue.push(err.toString());
+                // Only transport/timeout/etc errors should reach here
+                const msg =
+                    err instanceof Error ? err.message : String(err);
+                this.replyQueue.push(`ControllerError: ${msg}`);
             }
         }
     }
 
+    // --- parser ---
     private convertToEvent(eventMessage: string): Event {
-        const parts = eventMessage.split(' ');
-        const eventType = EventType[parts[0] as keyof typeof EventType];
-        const eventData = parts.slice(1).join(' ');
+        const lines = eventMessage.split(CRLF);         // supports multi-line events
+        const header = lines[0] ?? '';
+        const extraLines = lines.slice(1);        // 650- / 650+ payload or extra KEY=VALUE lines
 
-        // Example parsing logic
-        // You can customize this based on the actual event format
+        // Tokenize header + any extra lines; tolerate extra args/keywords in any order
+        const headerTokens = splitSmart(header);
+        const eventName = headerTokens[0] ?? '';
+        const allTokens = collectTokensFromLines([headerTokens.slice(1).join(' '), ...extraLines]);
+        const { positional, kv } = partitionKv(allTokens);
+
+        // Optional raw payload (useful for 650+ blocks like HS_DESC_CONTENT)
+        const payload = extraLines.length ? extraLines.join(CRLF) : undefined;
+
+        // Map to enum safely
+        const eventType = (EventType as any)[eventName] as EventType | undefined;
 
         switch (eventType) {
-            case EventType.STREAM:
-                const [streamId, status, circId, target, ...rest] = parts.slice(1);
-
-                const keywordArgs: Record<string, string> = {};
-                for (const arg of rest) {
-                    const [key, value] = arg.split('=');
-                    if (key && value !== undefined) {
-                        keywordArgs[key.toUpperCase()] = value;
-                    }
+            case EventType.STREAM: {
+                // STREAM <StreamID> <Status> <CircID> <Target> [KEY=VAL ...]
+                const [streamIdStr, status, circIdStr, target, ...restPos] = positional;
+                // Merge any restPos that look like KEY=VAL back into kv (robust to weird splitting)
+                for (const t of restPos) {
+                    const i = t.indexOf('=');
+                    if (i > 0) kv[t.slice(0, i).toUpperCase()] = t.slice(i + 1);
                 }
-
                 return {
-                    type: eventType,
-                    streamId: parseInt(streamId, 10),
+                    type: EventType.STREAM,
+                    streamId: toInt(streamIdStr) ?? -1,
                     status,
-                    circId,
+                    circId: circIdStr,
                     target,
-                    sourceAddr: keywordArgs['SOURCE_ADDR'] || null,
-                    purpose: keywordArgs['PURPOSE'] || null,
-                    reason: keywordArgs['REASON'] || null,
-                    remoteReason: keywordArgs['REMOTE_REASON'] || null,
-                    source: keywordArgs['SOURCE'] || null
+                    sourceAddr: kv['SOURCE_ADDR'] ?? null,
+                    purpose: kv['PURPOSE'] ?? null,
+                    reason: kv['REASON'] ?? null,
+                    remoteReason: kv['REMOTE_REASON'] ?? null,
+                    source: kv['SOURCE'] ?? null,
+                    // keep everything else just in case
+                    kv,
+                    payload,
+                    data: lines.join(" ") // todo - remove later
                 } as StreamEvent;
+            }
 
-            case EventType.ADDRMAP:
-                const [address, mappedAddress, expires] = parts.slice(1);
-
+            case EventType.ADDRMAP: {
+                // ADDRMAP <address> <newaddress> [expiry]
+                const [address, mappedAddress, expires] = positional;
                 return {
-                    type: eventType,
+                    type: EventType.ADDRMAP,
                     address,
                     mappedAddress,
-                    expires: expires ? new Date(expires) : undefined
+                    expires: expires ? new Date(expires) : undefined,
+                    streamId: kv['STREAMID'] ? toInt(kv['STREAMID']!) ?? undefined : undefined,
+                    cached: kv['CACHED'] ? kv['CACHED'] === 'YES' : undefined,
+                    // keep everything else just in case
+                    kv,
+                    payload,
+                    data: lines.join(" ")
                 } as AddrMapEvent;
+            }
 
             case EventType.CIRC: {
-                const [, idStr, status, ...rest] = parts;
-                const circId = parseInt(idStr, 10);
+                // CIRC <CircID> <Status> [PathCommaList] [KEY=VAL ...]
+                // Path tokens begin with '$' (may be comma-separated)
+                const [circIdStr, status, ...rest] = positional;
+                const circId = toInt(circIdStr) ?? -1;
 
                 const path: CircHop[] = [];
-                const kv: Record<string, string> = {};
-
                 let i = 0;
                 for (; i < rest.length; i++) {
                     const tok = rest[i];
                     if (!tok.startsWith('$')) break;
                     for (const hop of tok.split(',')) {
-                        const [fp, nick] = hop.split('~');
-                        path.push({fingerprint: fp.replace(/^\$/, ''), nickname: nick});
+                        const [fpRaw, nick] = hop.split('~');
+                        const fp = fpRaw?.replace(/^\$/, '') ?? '';
+                        path.push({ fingerprint: fp, nickname: nick });
                     }
                 }
+                // Any leftover positional tokens that are KEY=VAL — fold them into kv
                 for (; i < rest.length; i++) {
-                    const [k, v] = rest[i].split('=');
-                    if (k && v !== undefined) kv[k.toUpperCase()] = v;
+                    const t = rest[i];
+                    const eq = t.indexOf('=');
+                    if (eq > 0) kv[t.slice(0, eq).toUpperCase()] = t.slice(eq + 1);
                 }
 
                 return {
@@ -632,15 +773,23 @@ export class Control {
                     purpose: kv['PURPOSE'],
                     reason: kv['REASON'],
                     remoteReason: kv['REMOTE_REASON'],
-                    timeCreated: kv['TIME_CREATED'] ? new Date(kv['TIME_CREATED'] + 'Z') : undefined
+                    timeCreated: kv['TIME_CREATED'] ? new Date(kv['TIME_CREATED'] + 'Z') : undefined,
+                    kv,
+                    payload,
+                    data: lines.join(" ") // todo - remove later
                 } as CircEvent;
             }
 
-            default:
+            default: {
+                // Generic, tolerant handler for any current/future event types
                 return {
-                    type: eventType,
-                    data: eventData,
-                };
+                    type: eventType ?? (eventName as any),
+                    args: positional,
+                    kv,
+                    payload,            // if this was a 650+ block, payload carries the body
+                    raw: eventMessage,  // keep raw for debugging/advanced handlers
+                } as any;
+            }
         }
     }
 
@@ -878,4 +1027,68 @@ export class Control {
     private isValidFingerprint(hex: string): boolean {
         return /^[A-F0-9]{40}$/.test(hex);
     }
+}
+
+// --- helpers ---
+const CRLF = '\r\n' as const;
+const STATUS_LINE_RE = /^(\d{3})[ +\-](.*)$/;
+const isOkCode = (n: number) => n >= 200 && n < 300;
+
+function parseFirstStatusCode(raw: string): { code: number; text: string } {
+    const line = raw.split(CRLF)[0] ?? '';
+    const m = STATUS_LINE_RE.exec(line);
+    if (!m) return { code: NaN, text: line };
+    return { code: Number(m[1]), text: m[2] ?? '' };
+}
+
+function splitSmart(s: string): string[] {
+    // split on spaces but respect "quoted strings"
+    const out: string[] = [];
+    let cur = '';
+    let inQ = false;
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === '"' ) {
+            inQ = !inQ;
+            continue;
+        }
+        if (!inQ && ch === ' ') {
+            if (cur) { out.push(cur); cur = ''; }
+            continue;
+        }
+        cur += ch;
+    }
+    if (cur) out.push(cur);
+    return out;
+}
+
+function collectTokensFromLines(lines: string[]): string[] {
+    const tokens: string[] = [];
+    for (const line of lines) {
+        if (!line) continue;
+        tokens.push(...splitSmart(line));
+    }
+    return tokens;
+}
+
+function partitionKv(tokens: string[]): { positional: string[]; kv: Record<string,string> } {
+    const positional: string[] = [];
+    const kv: Record<string,string> = {};
+    for (const t of tokens) {
+        const eq = t.indexOf('=');
+        if (eq > 0) {
+            const k = t.slice(0, eq).toUpperCase();
+            const v = t.slice(eq + 1);
+            kv[k] = v;
+        } else {
+            positional.push(t);
+        }
+    }
+    return { positional, kv };
+}
+
+function toInt(x?: string): number | undefined {
+    if (x == null) return undefined;
+    const n = Number(x);
+    return Number.isFinite(n) ? n : undefined;
 }
