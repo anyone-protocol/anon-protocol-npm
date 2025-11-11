@@ -84,6 +84,26 @@ export enum Flag {
     V3Dir = 'V3Dir'
 }
 
+
+export interface RouterStatus {
+    // r-line
+    nickname: string;
+    identityHex: string;
+    digest: string;
+    published: Date;
+    ip: string;
+    orPort: number;
+    dirPort: number;
+    // s-line
+    flags: Flag[];
+    // w-line
+    bandwidth: number;
+}
+
+/**
+ * @deprecated Use `RouterStatus` instead.
+ * This legacy implementation is maintained only for backward compatibility.
+ */
 export interface RelayInfo {
     fingerprint: string;
     nickname: string;

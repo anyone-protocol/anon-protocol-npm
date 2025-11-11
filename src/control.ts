@@ -1,4 +1,4 @@
-import { AddrMapEvent, CircEvent, CircHop, CircStatus, CircuitStatus, Event, EventType, ExtendCircuitOptions, Flag, Purpose, Relay, RelayInfo, StreamEvent } from './models';
+import { AddrMapEvent, CircEvent, CircHop, CircStatus, CircuitStatus, Event, EventType, ExtendCircuitOptions, Flag, Purpose, Relay, RelayInfo, RouterStatus, StreamEvent } from './models';
 import * as net from 'net';
 import { AsyncEvent, AsyncQueue } from './queue';
 import { Buffer } from 'buffer';
@@ -852,56 +852,124 @@ export class Control {
         }
     }
 
-    async getRelays(): Promise<RelayInfo[]> {
-        const response = await this.msg('GETINFO ns/all');
+    private safeParseInt(s?: string, def = 0): number {
+        const n = Number(s);
+        return Number.isFinite(n) ? n : def;
+    }
+
+    private parseW(line: string) {
+        const m1 = /Bandwidth=(\d+)/.exec(line);
+        return m1 ? parseInt(m1[1], 10) : undefined;
+    }
+
+    // r nickname identity digest date time ip orPort dirPort
+    private parseR(line: string) {
+        const parts = line.split(/\s+/);
+        const nickname = parts[1];
+        const identityB64 = parts[2];
+        const digestB64 = parts[3];
+        const published = new Date(`${parts[4]}T${parts[5]}Z`);
+        const ip = parts[6];
+        const orPort = this.safeParseInt(parts[7]);
+        const dirPort = this.safeParseInt(parts[8]);
+        return { nickname, identityB64, digestB64, published, ip, orPort, dirPort };
+    }
+
+    private toFlagList(line: string): Flag[] {
+        return line
+            .trim()
+            .split(/\s+/)
+            .map(f => (Flag as any)[f] as Flag)
+            .filter(Boolean);
+    }
+
+    // ====== Instance methods ======
+
+    /**
+     * Fetches the consensus (ns/all) and returns fully parsed router statuses.
+     */
+    async getAllRouterStatuses(): Promise<RouterStatus[]> {
+        const response = await this.msg('GETINFO ns/all', true);
 
         if (!response.startsWith('250+ns/all=')) {
-            throw new Error('Invalid response format');
+            throw new Error('Invalid ns/all response (missing 250+ns/all=)');
         }
 
-        const cleanedResponse = response
+        const body = response
             .replace(/^250\+ns\/all=/, '')
-            .replace(/250 OK$/, '')
+            .replace(/\r/g, '')
+            .replace(/\n250 OK\s*$/, '')
             .trim();
 
-        const relays: RelayInfo[] = [];
-        const lines = cleanedResponse.split('\n');
+        const lines = body.split('\n');
 
-        let current: Partial<RelayInfo> = {};
+        const out: RouterStatus[] = [];
+        let current: RouterStatus | null = null;
 
-        for (const line of lines) {
-            const trimmedLine = line.trim();
+        const pushCurrent = () => {
+            if (current) {
+                out.push(current);
+            }
+        };
 
-            if (trimmedLine.startsWith('r ')) {
-                if (current.fingerprint) {
-                    relays.push(current as RelayInfo);
-                    current = {};
-                }
-                const [, nickname, fingerprint, , date, time, ip, orPort, dirPort] = trimmedLine.split(' ');
+        for (const raw of lines) {
+            const line = raw.trim();
+            if (!line) continue;
 
-                current.nickname = nickname;
-                current.fingerprint = this.base64ToHex(fingerprint);
-                current.published = new Date(`${date}T${time}Z`);
-                current.ip = ip;
-                current.orPort = parseInt(orPort, 10);
-                current.dirPort = parseInt(dirPort, 10);
-                current.flags = [];
-                current.bandwidth = 0;
-            } else if (trimmedLine.startsWith('s ')) {
-                current.flags = trimmedLine.substring(2).split(' ').map(flag => Flag[flag as keyof typeof Flag]);
-            } else if (trimmedLine.startsWith('w ')) {
-                const match = trimmedLine.match(/Bandwidth=(\d+)/);
-                if (match) {
-                    current.bandwidth = parseInt(match[1], 10);
-                }
+            if (line.startsWith('r ')) {
+                pushCurrent();
+
+                const { nickname, identityB64, digestB64, published, ip, orPort, dirPort } = this.parseR(line);
+
+                current = {
+                    nickname,
+                    identityHex: this.base64ToHex(identityB64),
+                    digest: digestB64,
+                    published,
+                    ip,
+                    orPort,
+                    dirPort,
+                    flags: [],
+                    bandwidth: 0 // will be filled later
+                };
+                continue;
+            }
+
+            if (!current) continue;
+
+            if (line.startsWith('s ')) {
+                current.flags = this.toFlagList(line.slice(2));
+                continue;
+            }
+
+            if (line.startsWith('w ')) {
+                const bandwidth = this.parseW(line);
+                if (bandwidth !== undefined) current.bandwidth = bandwidth;
             }
         }
 
-        if (current.fingerprint) {
-            relays.push(current as RelayInfo);
-        }
+        pushCurrent();
 
-        return relays;
+        return out;
+    }
+
+    /**
+     * @deprecated Use `getAllRouterStatuses` instead.
+     * This legacy implementation is maintained only for backward compatibility.
+     */
+    async getRelays(): Promise<RelayInfo[]> {
+        const routerStatuses = await this.getAllRouterStatuses();
+
+        return routerStatuses.map(rs => ({
+            fingerprint: rs.identityHex,
+            nickname: rs.nickname,
+            ip: rs.ip,
+            orPort: rs.orPort,
+            flags: rs.flags,
+            bandwidth: rs.bandwidth,
+            published: rs.published,
+            dirPort: rs.dirPort,
+        })) as RelayInfo[];
     }
 
     async findFirstByCountry(relays: RelayInfo[], firstCount: number, ...countries: string[]): Promise<RelayInfo[]> {
