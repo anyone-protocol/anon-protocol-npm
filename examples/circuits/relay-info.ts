@@ -22,6 +22,10 @@ async function main() {
         const relayInfo0 = await control.getRelayInfo(circuits[0].relays[0].fingerprint);
         console.log('Relay [0] info:', relayInfo0);
 
+        let desc = await control.getRouterServerDescriptorById(relayInfo0.fingerprint);
+
+        console.log('Router Descriptor by ID:', desc);
+
         // close connection
         control.end();
     } catch (error) {

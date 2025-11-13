@@ -88,7 +88,7 @@ export enum Flag {
 export interface RouterStatus {
     // r-line
     nickname: string;
-    identityHex: string;
+    fingerprint: string;
     digest: string;
     published: Date;
     ip: string;

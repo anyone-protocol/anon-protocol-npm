@@ -70,6 +70,7 @@ export async function createAnonConfigFile(options: Config): Promise<string> {
     `ControlPort ${options.controlPort}`,
     `GeoIPFile ${path.join(binaryDir, 'geoip')}`,
     `GeoIPv6File ${path.join(binaryDir, 'geoip6')}`,
+    `UseMicrodescriptors 0`,
   ];
 
   await fs.writeFile(configPath, configItems.join('\n') + '\n');

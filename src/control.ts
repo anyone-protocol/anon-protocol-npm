@@ -276,45 +276,129 @@ export class Control {
         }
     }
 
-    async getRelayInfo(fingerprint: string): Promise<RelayInfo> {
-        const command = `GETINFO ns/id/$${fingerprint}`;
-        const response = await this.msg(command);
+    /**
+     * Fetch router's server descriptor for a relay by its identity fingerprint (hex).
+     * Returns the raw descriptor text (server descriptor document).
+     *
+     * Microdescriptors should be disabled for this to work:
+     * set 'UseMicrodescriptors 0' in anonrc
+     *
+     * fingerprintHex: 40-char hex, no leading '$'
+     */
+    async getRouterServerDescriptorById(fingerprintHex: string): Promise<string> {
+        const fp = `$${fingerprintHex.toUpperCase()}`;
+        const cmd = `GETINFO desc/id/${fp}`;
+        const raw = await this.msg(cmd, true);
 
-        if (!response.startsWith('250+ns/id/')) {
-            throw new Error(`Failed to get relay address: ${response}`);
+        if (!raw.startsWith('250+desc/id/')) {
+            throw new Error(`Unexpected response for ${cmd}: ${raw.slice(0, 120)}`);
         }
 
-        const lines = response.split('\n').map(line => line.trim());
-
-        let flags: Flag[] = [];
-        let ip: string = '';
-        let orPort: number = 0;
-        let bandwidth: number = 0;
-        let nickname: string = '';
+        // Strip control-port framing: 250+md/id/$FPR= ... . 250 OK
+        const lines = raw.replace(/\r/g, '').split('\n');
+        const descriptorLines: string[] = [];
+        let inBlock = false;
 
         for (const line of lines) {
-            // Extract flags from the line starting with 's '
-            if (line.startsWith('s ')) {
-                flags = line.substring(2).trim().split(' ').map(flag => Flag[flag as keyof typeof Flag]);
+            if (line.startsWith('250+desc/id/')) {
+                inBlock = true;
+                continue; // skip the header line itself
+            }
+            if (line === '.') {
+                inBlock = false;
+                continue;
+            }
+            if (line === '250 OK') continue;
+
+            if (inBlock) descriptorLines.push(line);
+        }
+
+        if (!descriptorLines.length) {
+            throw new Error(`Empty descriptor body for ${cmd}`);
+        }
+
+        return descriptorLines.join('\n');
+    }
+
+    /**
+     * Fetch a single router's status entry (ns/id/$fp).
+     * Returns a full RouterStatus object (same structure as getAllRouterStatuses()).
+     */
+    async getRouterStatus(fingerprintHex: string): Promise<RouterStatus> {
+        const fp = `$${fingerprintHex.toUpperCase()}`;
+        const response = await this.msg(`GETINFO ns/id/${fp}`, true );
+
+        if (!response.startsWith('250+ns/id/')) {
+            throw new Error(`Invalid ns/id response for ${fp}: ${response}`);
+        }
+
+        // Strip framing
+        const body = response
+            .replace(/^250\+ns\/id\/[^=]+= */, '')
+            .replace(/\r/g, '')
+            .replace(/\n250 OK\s*$/, '')
+            .trim();
+
+        const lines = body.split('\n').map(l => l.trim());
+
+        let status: RouterStatus | null = null;
+
+        for (const line of lines) {
+            if (!line) continue;
+
+            if (line.startsWith('r ')) {
+                const { nickname, identityB64, digestB64, published, ip, orPort, dirPort,} = this.parseR(line);
+
+                status = {
+                    nickname,
+                    fingerprint: base64ToHex(identityB64),
+                    digest: digestB64,
+                    published,
+                    ip,
+                    orPort,
+                    dirPort,
+                    flags: [], // to be filled from 's ' line
+                    bandwidth: 0, // to be filled from 'w ' line
+                };
+                continue;
             }
 
-            // Extract IP and ORPort from the line starting with 'r '
-            if (line.startsWith('r ')) {
-                const parts = line.split(' ');
+            if (!status) continue;
 
-                if (parts.length >= 7) {
-                    nickname = parts[1];
-                    ip = parts[6];
-                    orPort = parseInt(parts[7], 10);
-                }
+            if (line.startsWith('s ')) {
+                status.flags = this.toFlagList(line.slice(2));
+                continue;
             }
 
             if (line.startsWith('w ')) {
-                bandwidth = parseInt(line.split('=')[1], 10);
+                const bandwidth = this.parseW(line);
+                if (bandwidth !== undefined) status.bandwidth = bandwidth;
             }
         }
 
-        return { fingerprint, nickname, ip, orPort, flags, bandwidth };
+        if (!status) {
+            throw new Error(`No router status found in ns/id/${fp}`);
+        }
+
+        return status;
+    }
+
+    /**
+     * @deprecated Use `getRouterStatusById` instead.
+     * This legacy implementation is maintained only for backward compatibility.
+     */
+    async getRelayInfo(fingerprint: string): Promise<RelayInfo> {
+        const rs = await this.getRouterStatus(fingerprint);
+        return {
+            fingerprint: rs.fingerprint,
+            nickname: rs.nickname,
+            ip: rs.ip,
+            orPort: rs.orPort,
+            flags: rs.flags,
+            bandwidth: rs.bandwidth,
+            published: rs.published,
+            dirPort: rs.dirPort,
+        } as RelayInfo;
     }
 
     end() {
@@ -883,8 +967,6 @@ export class Control {
             .filter(Boolean);
     }
 
-    // ====== Instance methods ======
-
     /**
      * Fetches the consensus (ns/all) and returns fully parsed router statuses.
      */
@@ -923,14 +1005,14 @@ export class Control {
 
                 current = {
                     nickname,
-                    identityHex: this.base64ToHex(identityB64),
+                    fingerprint: base64ToHex(identityB64),
                     digest: digestB64,
                     published,
                     ip,
                     orPort,
                     dirPort,
-                    flags: [],
-                    bandwidth: 0 // will be filled later
+                    flags: [], // will be filled from 's ' line
+                    bandwidth: 0 // will be filled from 'w ' line
                 };
                 continue;
             }
@@ -961,7 +1043,7 @@ export class Control {
         const routerStatuses = await this.getAllRouterStatuses();
 
         return routerStatuses.map(rs => ({
-            fingerprint: rs.identityHex,
+            fingerprint: rs.fingerprint,
             nickname: rs.nickname,
             ip: rs.ip,
             orPort: rs.orPort,
@@ -1073,28 +1155,6 @@ export class Control {
 
         return parts[1];
     }
-
-    private base64ToHex(identity: string, checkIfFingerprint: boolean = true): string {
-        let decoded: Buffer;
-
-        try {
-            decoded = Buffer.from(identity, 'base64');
-        } catch (err) {
-            throw new Error(`Unable to decode identity string '${identity}'`);
-        }
-
-        const hex = decoded.toString('hex').toUpperCase();
-
-        if (checkIfFingerprint && !this.isValidFingerprint(hex)) {
-            throw new Error(`Decoded '${identity}' to '${hex}', which isn't a valid fingerprint`);
-        }
-
-        return hex;
-    }
-
-    private isValidFingerprint(hex: string): boolean {
-        return /^[A-F0-9]{40}$/.test(hex);
-    }
 }
 
 // --- helpers ---
@@ -1159,4 +1219,26 @@ function toInt(x?: string): number | undefined {
     if (x == null) return undefined;
     const n = Number(x);
     return Number.isFinite(n) ? n : undefined;
+}
+
+function isValidFingerprint(hex: string): boolean {
+    return /^[A-F0-9]{40}$/.test(hex);
+}
+
+function base64ToHex(identity: string, checkIfFingerprint: boolean = true): string {
+    let decoded: Buffer;
+
+    try {
+        decoded = Buffer.from(identity, 'base64');
+    } catch (err) {
+        throw new Error(`Unable to decode identity string '${identity}'`);
+    }
+
+    const hex = decoded.toString('hex').toUpperCase();
+
+    if (checkIfFingerprint && !isValidFingerprint(hex)) {
+        throw new Error(`Decoded '${identity}' to '${hex}', which isn't a valid fingerprint`);
+    }
+
+    return hex;
 }
