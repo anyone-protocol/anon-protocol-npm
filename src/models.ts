@@ -54,8 +54,7 @@ export enum EventType {
     STREAM = 'STREAM',
     STREAM_BW = 'STREAM_BW',
     TRANSPORT_LAUNCHED = 'TRANSPORT_LAUNCHED',
-    WARN = 'WARN',
-    UNKNOWN = 'UNKNOWN'
+    WARN = 'WARN'
 }
 
 export interface ExtendCircuitOptions {
@@ -63,6 +62,7 @@ export interface ExtendCircuitOptions {
     serverSpecs?: string[];
     purpose?: Purpose;
     awaitBuild?: boolean;
+    buildTimeout?: number;
 }
 
 export enum Flag {
@@ -113,7 +113,7 @@ export interface StreamEvent extends Event {
     type: EventType.STREAM;
     streamId: number;
     status: string;
-    circId: string;
+    circId: number;
     target: string;
     sourceAddr: string | null;
     purpose: string | null;

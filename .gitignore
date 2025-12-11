@@ -8,3 +8,6 @@ terms-agreement
 bin
 
 .idea
+
+# Claude Code files
+cc/

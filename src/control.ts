@@ -136,18 +136,6 @@ export class Control {
     async msg(message: string, expectOk: boolean = false): Promise<string> {
         this.msgLock.push(); // serialize command → reply
         try {
-            // --- Drain any leftover replies from prior calls ---
-            let dropped = 0;
-            while (!this.replyQueue.isEmpty) {
-                const stale = await this.replyQueue.pop();
-                dropped++;
-                console.warn(`[AnonCtrl] Dropping stale reply message:\n   ${stale}`);
-            }
-
-            if (dropped > 0) {
-                console.warn(`[AnonCtrl] Dropped ${dropped} unconsumed message(s) before sending "${message}"`);
-            }
-
             // --- Send the command ---
             this.client.write(`${message}${CRLF}`);
 
@@ -183,7 +171,6 @@ export class Control {
                 }
             }
 
-            console.debug(`[AnonCtrl] → ${message}`);
             return raw;
         } catch (err) {
             if (!this.client || this.client.destroyed) {
@@ -205,6 +192,7 @@ export class Control {
         const serverSpecs: string[] = options.serverSpecs ?? [];
         const purpose: Purpose = options.purpose ?? 'general';
         const awaitBuild: boolean = options.awaitBuild ?? false;
+        const buildTimeout: number = options.buildTimeout ?? 60000;
 
         let queue;
         let eventListener: Function | null = null;
@@ -240,27 +228,47 @@ export class Control {
         }
 
         if (awaitBuild) {
-            let received = false;
+            // Create a timeout promise
+            const timeoutPromise = new Promise<never>((_, reject) => {
+                setTimeout(() => {
+                    reject(new Error(`Circuit build timeout after ${buildTimeout}ms`));
+                }, buildTimeout);
+            });
 
-            let numb = 0;
+            // Create the circuit wait promise
+            const waitPromise = new Promise<void>(async (resolve, reject) => {
+                try {
+                    let received = false;
+                    let numb = 0;
 
-            while (!received) {
-                const event = await queue!.pop();
+                    while (!received) {
+                        const event = await queue!.pop();
 
-                if (event.circId === circuitId) {
-                    console.log('Received event', event);
-                    numb++;
-                    if (numb >= serverSpecs.length && (event.status == CircStatus.EXTENDED || event.status == CircStatus.BUILT)) {
-                        received = true;
+                        if (event.circId === circuitId) {
+                            console.log('Received event', event);
+                            numb++;
+                            if (numb >= serverSpecs.length && (event.status == CircStatus.EXTENDED || event.status == CircStatus.BUILT)) {
+                                received = true;
+                                resolve();
+                            }
+
+                            if (event.status === CircStatus.FAILED || event.status === CircStatus.CLOSED) {
+                                reject(new Error(`Circuit build failed: ${event.status} (${event.reason})`));
+                            }
+                        }
                     }
-
-                    if (event.status === CircStatus.FAILED || event.status === CircStatus.CLOSED) {
-                        throw new Error(`Circuit build failed: ${event.status} (${event.reason})`);
-                    }
+                } catch (error) {
+                    reject(error);
                 }
-            }
+            });
 
-            await this.removeEventListener(eventListener!);
+            try {
+                // Race between timeout and circuit build
+                await Promise.race([waitPromise, timeoutPromise]);
+            } finally {
+                // Always cleanup the event listener
+                await this.removeEventListener(eventListener!);
+            }
         }
 
         return circuitId;
@@ -378,7 +386,7 @@ export class Control {
         }
     }
 
-    async attachStream(streamId: number, circuitId: number, exitingHop?: number): Promise<void> {
+    async attachStream(streamId: number, circuitId: number, exitingHop?: number): Promise<boolean> {
         if (!this.client || this.client.destroyed || !this.client.writable) {
             throw new Error('SocketClosed');
         }
@@ -391,19 +399,23 @@ export class Control {
 
         const response = await this.msg(command);
 
-        if (!response.startsWith('250')) {
-            const msg = response.trim();
-            if (msg.startsWith('555')) {
-                throw new Error(`AttachFailed: circuit ${circuitId} unsatisfiable (${msg})`);
+        const {code, text} = parseFirstStatusCode(response);
+
+        if (!Number.isNaN(code)) {
+            if (code === 552) {
+                console.warn(`[AnonCtrl] ATTACHSTREAM ${streamId} -> 552 Unknown stream; ignoring (stream likely closed)`);
+                return false;
             }
-            if (msg.includes('not found') || msg.includes('closed') || msg.startsWith('551')) {
-                throw new Error(`AttachFailed: circuit ${circuitId} unavailable (${msg})`);
+            if (code === 555) {
+                console.warn(`[AnonCtrl] ATTACHSTREAM ${streamId} -> 555 Connection is not managed by controller; ignoring`);
+                return false;
             }
-            if (msg.startsWith('552')) {
-                throw new Error(`InvalidRequest: ${msg}`);
+            if (!isOkCode(code)) {
+                throw new Error(`AttachStream failed (${code}): ${text}`);
             }
-            throw new Error(`ProtocolError: Unexpected ATTACHSTREAM response: ${msg}`);
         }
+
+        return true;
     }
 
     private async attachListeners(): Promise<[EventType[], EventType[]]> {
@@ -521,7 +533,7 @@ export class Control {
             const tidy = () => {
                 this.client.off('data', onData);
                 this.client.off('error', onError);
-                clearTimeout(timer);
+                if (timer) clearTimeout(timer);
             };
 
             const pushEventNow = () => {
@@ -538,10 +550,13 @@ export class Control {
                 reject(err);
             };
 
-            const timer = setTimeout(() => {
-                tidy();
-                reject(new Error('Timeout while waiting for Tor reply'));
-            }, timeoutMs);
+            let timer: NodeJS.Timeout;
+            if (timeoutMs > 0) {
+                timer = setTimeout(() => {
+                    tidy();
+                    reject(new Error('Timeout while waiting for Anon reply'));
+                }, timeoutMs);
+            }
 
             // -------------------------------
             // [3] Main data handler
@@ -559,9 +574,21 @@ export class Control {
                         const sep = line.charAt(3);
                         const rest = line.slice(4);
 
-                        if (sep === ' ') { eventLines.push(rest); pushEventNow(); continue; }
-                        if (sep === '+') { inEventDataBlock = true; eventLines.push(rest); continue; }
-                        if (sep === '-') { inEventContinuation = true; eventLines.push(rest); continue; }
+                        if (sep === ' ') {
+                            eventLines.push(rest);
+                            pushEventNow();
+                            continue;
+                        }
+                        if (sep === '+') {
+                            inEventDataBlock = true;
+                            eventLines.push(rest);
+                            continue;
+                        }
+                        if (sep === '-') {
+                            inEventContinuation = true;
+                            eventLines.push(rest);
+                            continue;
+                        }
 
                         eventLines.push(rest);
                         pushEventNow();
@@ -581,8 +608,15 @@ export class Control {
 
                     // --- [c] Handle event continuations (650-) ---
                     if (inEventContinuation) {
-                        if (line.startsWith('650-')) { eventLines.push(line.slice(4)); continue; }
-                        if (line.startsWith('650 ')) { eventLines.push(line.slice(4)); pushEventNow(); continue; }
+                        if (line.startsWith('650-')) {
+                            eventLines.push(line.slice(4));
+                            continue;
+                        }
+                        if (line.startsWith('650 ')) {
+                            eventLines.push(line.slice(4));
+                            pushEventNow();
+                            continue;
+                        }
 
                         pushEventNow(); // unexpected line ends continuation
                         // fall through to possible reply handling
@@ -654,7 +688,7 @@ export class Control {
         while (this.client && !this.client.destroyed) {
             try {
                 // read one complete reply (events already routed inside readReply)
-                const raw = await this.readReply();
+                const raw = await this.readReply(0);
 
                 // soft-parse the first status line to detect 5xx
                 const { code, text } = parseFirstStatusCode(raw);
@@ -709,7 +743,7 @@ export class Control {
                     type: EventType.STREAM,
                     streamId: toInt(streamIdStr) ?? -1,
                     status,
-                    circId: circIdStr,
+                    circId: toInt(circIdStr),
                     target,
                     sourceAddr: kv['SOURCE_ADDR'] ?? null,
                     purpose: kv['PURPOSE'] ?? null,
@@ -797,14 +831,8 @@ export class Control {
         let event: any = null;
         let eventType: EventType;
 
-        try {
-            event = this.convertToEvent(eventMessage);  // you’ll implement this parser
-            eventType = event.type;
-        } catch (err) {
-            event = eventMessage;
-            eventType = EventType.UNKNOWN;
-            console.error(`Tor sent a malformed event (${err}):`, eventMessage);
-        }
+        event = this.convertToEvent(eventMessage);  // you’ll implement this parser
+        eventType = event.type;
 
         // Dispatch to listeners
         const listeners = this.eventListeners.get(eventType);
@@ -846,7 +874,9 @@ export class Control {
                         this.eventNotice.wait(),
                         new Promise(resolve => setTimeout(resolve, 50)),
                     ]);
-                } catch { }
+                } catch (err: any) {
+                    console.log("Event loop wait error:", err);
+                }
                 this.eventNotice.clear();
             }
         }
@@ -1053,7 +1083,10 @@ function splitSmart(s: string): string[] {
             continue;
         }
         if (!inQ && ch === ' ') {
-            if (cur) { out.push(cur); cur = ''; }
+            if (cur) {
+                out.push(cur);
+                cur = '';
+            }
             continue;
         }
         cur += ch;
