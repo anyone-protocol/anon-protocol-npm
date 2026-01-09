@@ -145,7 +145,7 @@ const makeExecutable = (file: string) => {
   }
 
   if (downloadUrl === '') {
-    console.error(`Platform ${platform} (${arch}) is not sipported`);
+    console.error(`Platform ${platform} (${arch}) is not supported`);
     process.exit(1);
   }
 
@@ -170,7 +170,7 @@ const makeExecutable = (file: string) => {
 
   for (const file of files) {
     await makeExecutable(path.join(extractDest, file));
-    fs.promises.copyFile(path.join(extractDest, file), path.join(binaryDir, file));
+    await fs.promises.copyFile(path.join(extractDest, file), path.join(binaryDir, file));
   }
 
   // After downloading binary files

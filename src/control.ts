@@ -1,38 +1,35 @@
-import { AddrMapEvent, CircEvent, CircHop, CircStatus, CircuitStatus, Event, EventType, ExtendCircuitOptions, Flag, Purpose, Relay, RelayInfo, StreamEvent } from './models';
+import { CircEvent, CircStatus, CircuitStatus, Event, EventType, ExtendCircuitOptions, Flag, Purpose, Relay, RelayInfo } from './models';
 import * as net from 'net';
 import { AsyncEvent, AsyncQueue } from './queue';
-import { Buffer } from 'buffer';
-import { CountryCacheManager } from './country-cache';
+import { ProtocolParser, CRLF, parseFirstStatusCode, isOkCode } from './protocol-parser';
+import { EventDispatcher } from './event-dispatcher';
+import { RelayManager } from './relay-manager';
 
-// Types for pending request correlation
-type PendingRequest<T> = {
-    resolve: (value: T) => void;
-    reject: (error: Error) => void;
-    timeoutId: NodeJS.Timeout;
-};
-
+/**
+ * Control class for managing Anon control port connections.
+ * Refactored to use composition with ProtocolParser, EventDispatcher, and RelayManager.
+ */
 export class Control {
     private readonly client: net.Socket;
     private isAuthenticated: boolean = false;
-    private eventListeners: Map<EventType, Function[]> = new Map();
 
+    // Queues for message routing
     private replyQueue = new AsyncQueue<string>();
     private eventQueue = new AsyncQueue<string>();
     private defaultQueue = new AsyncQueue<string>();
-    private extendQueue = new AsyncQueue<string>();  // For EXTENDCIRCUIT responses (can't correlate until response)
+    private extendQueue = new AsyncQueue<string>();
     private eventNotice = new AsyncEvent();
 
-    // Correlation-based pending request maps
-    private pendingCountryRequests = new Map<string, PendingRequest<string>>();
-    private pendingNsRequests = new Map<string, PendingRequest<string>>();
+    // Composed components
+    private parser: ProtocolParser;
+    private eventDispatcher: EventDispatcher;
+    private relayManager: RelayManager;
 
+    // Loop tasks
     private readerLoopTask: Promise<void> | null = null;
-    private eventLoopTask: Promise<void> | null = null;
     private msgLoopTask: Promise<void> | null = null;
 
-    private countryCache: CountryCacheManager | null = null;
-    private countryCacheInitialized = false;
-
+    // Circuit event handling
     private circuitEventListenerEnabled: boolean = false;
     private circuitEventQueue = new AsyncQueue<CircEvent>();
     private circuitEventListener = (event: Event) => {
@@ -41,9 +38,6 @@ export class Control {
         }
     };
 
-    // Default timeout for pending requests (10 seconds)
-    private requestTimeout = 10000;
-
     constructor(host = '127.0.0.1', port = 9051) {
         console.log('Connecting to Anon Control Port at', host, port);
 
@@ -51,8 +45,25 @@ export class Control {
             console.log('Successfully connected to Anon Control Port');
         });
 
+        // Initialize composed components
+        this.parser = new ProtocolParser(this.eventQueue, this.eventNotice);
+        this.eventDispatcher = new EventDispatcher(
+            this.client,
+            this.eventQueue,
+            this.eventNotice,
+            this.parser,
+            () => this.isAuthenticated,
+            (events) => this.setEvents(events)
+        );
+        this.relayManager = new RelayManager(
+            this.defaultQueue,
+            (msg) => this.msgAsync(msg)
+        );
+
         this.createLoopTasks();
     }
+
+    // ==================== Authentication ====================
 
     async authenticate(password: string = 'password'): Promise<void> {
         await this.msgAsync(`AUTHENTICATE "${password}"`);
@@ -68,32 +79,26 @@ export class Control {
         }
     }
 
+    // ==================== Event Management (delegated) ====================
+
     async enableCircuitEventListener(): Promise<void> {
-        await this.addEventListener(this.circuitEventListener, EventType.CIRC);
+        await this.eventDispatcher.addEventListener(this.circuitEventListener, EventType.CIRC);
         this.circuitEventListenerEnabled = true;
     }
 
     async disableCircuitEventListener(): Promise<void> {
-        await this.removeEventListener(this.circuitEventListener);
+        await this.eventDispatcher.removeEventListener(this.circuitEventListener);
         this.circuitEventListenerEnabled = false;
     }
 
-    /**
-     *  Request the server to inform the client about interesting events.
-     *  The syntax is:
-     *      "SETEVENTS" [SP "EXTENDED"] *(SP EventCode) CRLF
-     *      EventCode = 1*(ALPHA / "_")  (see section 4.1.x for event types)
-     *  Any events not listed in the SETEVENTS line are turned off;
-     *  thus, sending SETEVENTS with an empty body turns off all event reporting.
-     *  The server responds with a 250 OK reply on success,
-     *  and a 552 Unrecognized event reply if one of the event codes isn’t recognized.
-     *  (On error, the list of active event codes isn’t changed.)
-     *  If the flag string “EXTENDED” is provided,
-     *  Anon may provide extra information with events for this connection;
-     *
-     * @param events Array of EventType to set
-     * @returns {Promise<boolean>} true if successful, false otherwise
-     */
+    async addEventListener(callback: Function, ...eventTypes: EventType[]): Promise<void> {
+        await this.eventDispatcher.addEventListener(callback, ...eventTypes);
+    }
+
+    async removeEventListener(callback: Function): Promise<void> {
+        await this.eventDispatcher.removeEventListener(callback);
+    }
+
     async setEvents(events: EventType[]): Promise<boolean> {
         const command = `SETEVENTS ${events.join(' ')}`;
         await this.msgAsync(command);
@@ -107,18 +112,19 @@ export class Control {
         }
     }
 
+    // ==================== Circuit Management ====================
+
     async circuitStatus(): Promise<CircuitStatus[]> {
-        await this.msgAsync('GETINFO circuit-status')
+        await this.msgAsync('GETINFO circuit-status');
 
         return await this.defaultQueue.pop().then(response => {
-
             if (!response.startsWith('250+circuit-status=') && !response.startsWith('250 OK')) {
                 throw new Error('Invalid response format: ' + response);
             }
 
             const cleanedResponse = response
                 .replace(/^250\+circuit-status=/, '')
-                .replace(/250 OK$/, '')
+                .replace(/250 OK$/, '');
 
             const circuits: CircuitStatus[] = [];
             const lines = cleanedResponse.split('\n').filter(line => line.trim() !== '');
@@ -147,7 +153,7 @@ export class Control {
                 const purpose = parts.find(part => part.startsWith('PURPOSE='))
                     ?.split('=')[1] || '';
                 const timeCreated = new Date(parts.find(part => part.startsWith('TIME_CREATED='))
-                    ?.split('=')[1] + 'Z' || ''); // Add Z to make it ISO 8601 compliant
+                    ?.split('=')[1] + 'Z' || '');
 
                 const circuit: CircuitStatus = {
                     circuitId,
@@ -169,171 +175,14 @@ export class Control {
         const circuits = await this.circuitStatus();
         const circuit = circuits.find(c => c.circuitId === circuitId);
         if (!circuit) {
-            console.error(`Circuit with ID ${circuitId} not found`);
             throw new Error(`Circuit with ID ${circuitId} not found`);
         }
         return circuit;
     }
 
-    async msgAsync(message: string, expectOk: boolean = false): Promise<void> {
-        try {
-            // --- Send the command ---
-            this.client.write(`${message}${CRLF}`);
-        } catch (err) {
-            if (!this.client || this.client.destroyed) {
-                this.end?.();
-                throw new Error('SocketClosed');
-            }
-            throw err;
-        }
-    }
-
-    async msgLoop(expectOk: boolean = false): Promise<void> {
-        while (true) {
-            try {
-                // --- Await one full reply ---
-                let raw = await this.replyQueue.pop();
-
-                // --- Handle transport-level errors bubbled from readerLoop ---
-                if (raw.startsWith('ControllerError:')) {
-                    const msg = raw.slice('ControllerError:'.length).trim() || 'ControllerError';
-                    if (!this.client || this.client.destroyed) {
-                        this.end?.();
-                        throw new Error('SocketClosed');
-                    }
-                    throw new Error(msg);
-                }
-
-                // --- Handle annotated 5xx replies from readerLoop ---
-                if (raw.startsWith('ReplyError:')) {
-                    const idx = raw.indexOf(CRLF);
-                    if (idx >= 0) {
-                        const annotated = raw.slice(0, idx);
-                        console.warn(`[AnonCtrl] ReplyError received: ${annotated}`);
-                        raw = raw.slice(idx + CRLF.length);
-                    }
-                }
-
-                // --- Optionally enforce OK replies (2xx) ---
-                if (expectOk) {
-                    const { code, text } = parseFirstStatusCode(raw);
-                    if (!Number.isFinite(code) || !isOkCode(code)) {
-                        console.error(`[AnonCtrl] Command failed (${code || '???'}): ${text}`);
-                        throw new Error(`Command failed (${Number.isFinite(code) ? code : '???'}): ${text}`);
-                    }
-                }
-
-                // Route response to correct pending request by correlation key
-                if (raw.startsWith("250 EXTENDED")) {
-                    // EXTENDCIRCUIT responses go to a FIFO queue (can't correlate until we get the response)
-                    this.extendQueue.push(raw);
-                } else if (raw.startsWith("250-ip-to-country/")) {
-                    // Extract IP from "250-ip-to-country/X.X.X.X=XX"
-                    const match = raw.match(/^250-ip-to-country\/([^=]+)=/);
-                    if (match) {
-                        const ip = match[1];
-                        const pending = this.pendingCountryRequests.get(ip);
-                        if (pending) {
-                            clearTimeout(pending.timeoutId);
-                            pending.resolve(raw);
-                            this.pendingCountryRequests.delete(ip);
-                        } else {
-                            // Unexpected response - log and discard
-                            console.warn(`[AnonCtrl] Unexpected country response for ${ip}, no pending request`);
-                        }
-                    } else {
-                        console.warn(`[AnonCtrl] Could not parse country response: ${raw}`);
-                    }
-                } else if (raw.startsWith("250+ns/id/$")) {
-                    // Extract fingerprint from "250+ns/id/$FINGERPRINT"
-                    const match = raw.match(/^250\+ns\/id\/\$([A-F0-9]+)/i);
-                    if (match) {
-                        const fingerprint = match[1].toUpperCase();
-                        const pending = this.pendingNsRequests.get(fingerprint);
-                        if (pending) {
-                            clearTimeout(pending.timeoutId);
-                            pending.resolve(raw);
-                            this.pendingNsRequests.delete(fingerprint);
-                        } else {
-                            // Unexpected response - log and discard
-                            console.warn(`[AnonCtrl] Unexpected ns response for ${fingerprint}, no pending request`);
-                        }
-                    } else {
-                        console.warn(`[AnonCtrl] Could not parse ns response: ${raw}`);
-                    }
-                } else {
-                    // Default queue for all other responses
-                    this.defaultQueue.push(raw);
-                }
-            } catch (err) {
-                if (!this.client || this.client.destroyed) {
-                    this.end?.();
-                    throw new Error('SocketClosed');
-                }
-                throw err;
-            }
-        }
-    }
-
-    // async msg(message: string, expectOk: boolean = false): Promise<string> {
-    //     this.msgLock.push(); // serialize command → reply
-    //     try {
-    //         // --- Send the command ---
-    //         this.client.write(`${message}${CRLF}`);
-    //
-    //         // --- Await one full reply ---
-    //         let raw = await this.replyQueue.pop();
-    //
-    //         // --- Handle transport-level errors bubbled from readerLoop ---
-    //         if (raw.startsWith('ControllerError:')) {
-    //             const msg = raw.slice('ControllerError:'.length).trim() || 'ControllerError';
-    //             if (!this.client || this.client.destroyed) {
-    //                 this.end?.();
-    //                 throw new Error('SocketClosed');
-    //             }
-    //             throw new Error(msg);
-    //         }
-    //
-    //         // --- Handle annotated 5xx replies from readerLoop ---
-    //         if (raw.startsWith('ReplyError:')) {
-    //             const idx = raw.indexOf(CRLF);
-    //             if (idx >= 0) {
-    //                 const annotated = raw.slice(0, idx);
-    //                 console.warn(`[AnonCtrl] ReplyError received: ${annotated}`);
-    //                 raw = raw.slice(idx + CRLF.length);
-    //             }
-    //         }
-    //
-    //         // --- Optionally enforce OK replies (2xx) ---
-    //         if (expectOk) {
-    //             const { code, text } = parseFirstStatusCode(raw);
-    //             if (!Number.isFinite(code) || !isOkCode(code)) {
-    //                 console.error(`[AnonCtrl] Command failed (${code || '???'}): ${text}`);
-    //                 throw new Error(`Command failed (${Number.isFinite(code) ? code : '???'}): ${text}`);
-    //             }
-    //         }
-    //
-    //         return raw;
-    //     } catch (err) {
-    //         if (!this.client || this.client.destroyed) {
-    //             this.end?.();
-    //             throw new Error('SocketClosed');
-    //         }
-    //         throw err;
-    //     } finally {
-    //         await this.msgLock.pop();
-    //     }
-    // }
-
-    async resolve(hostname: string): Promise<void> {
-        await this.msgAsync(`RESOLVE ${hostname}`);
-        await this.defaultQueue.pop();
-    }
-
     async extendCircuit(options: ExtendCircuitOptions = {}): Promise<number> {
         if (!this.circuitEventListenerEnabled) {
-            console.warn("Circuit event listener is not enabled. Enabling it now.");
-            throw new Error("Circuit event listener must be enabled to use extendCircuit with awaitBuild. Please call enableCircuitEventListener() first.");
+            throw new Error("Circuit event listener must be enabled. Call enableCircuitEventListener() first.");
         }
 
         let circuitId: number = options.circuitId ?? 0;
@@ -365,14 +214,12 @@ export class Control {
         }
 
         if (awaitBuild) {
-            // Create a timeout promise
             const timeoutPromise = new Promise<never>((_, reject) => {
                 setTimeout(() => {
                     reject(new Error(`Circuit build timeout after ${buildTimeout}ms`));
                 }, buildTimeout);
             });
 
-            // Create the circuit wait promise
             const waitPromise = new Promise<void>(async (resolve, reject) => {
                 try {
                     let received = false;
@@ -382,7 +229,6 @@ export class Control {
                         const event = await this.circuitEventQueue.pop();
 
                         if (event.circId === circuitId) {
-                            // console.log('Received event', event);
                             numb++;
                             if (numb >= serverSpecs.length && (event.status == CircStatus.EXTENDED || event.status == CircStatus.BUILT)) {
                                 received = true;
@@ -406,9 +252,7 @@ export class Control {
     }
 
     async closeCircuit(circuitId: number): Promise<void> {
-        const command = `CLOSECIRCUIT ${circuitId}`;
-
-        await this.msgAsync(command);
+        await this.msgAsync(`CLOSECIRCUIT ${circuitId}`);
         const response = await this.defaultQueue.pop();
 
         if (!response.startsWith('250')) {
@@ -416,86 +260,40 @@ export class Control {
         }
     }
 
-    async getRelayInfo(fingerprint: string, timeoutMs: number = 10000): Promise<RelayInfo> {
-        // Normalize fingerprint to uppercase
-        const normalizedFp = fingerprint.toUpperCase();
-
-        // Check if there's already a pending request for this fingerprint
-        const existingPending = this.pendingNsRequests.get(normalizedFp);
-        if (existingPending) {
-            // Wait for existing request to complete
-            return new Promise<RelayInfo>((resolve, reject) => {
-                const originalResolve = existingPending.resolve;
-                const originalReject = existingPending.reject;
-                existingPending.resolve = (value: string) => {
-                    originalResolve(value);
-                    resolve(this.parseRelayInfoResponse(value, normalizedFp));
-                };
-                existingPending.reject = (err: Error) => {
-                    originalReject(err);
-                    reject(err);
-                };
-            });
+    async attachStream(streamId: number, circuitId: number, exitingHop?: number): Promise<boolean> {
+        if (!this.client || this.client.destroyed || !this.client.writable) {
+            throw new Error('SocketClosed');
         }
 
-        // Create correlation-based promise
-        const response = await new Promise<string>((resolve, reject) => {
-            const timeoutId = setTimeout(() => {
-                this.pendingNsRequests.delete(normalizedFp);
-                reject(new Error(`getRelayInfo timeout for ${normalizedFp} after ${timeoutMs}ms`));
-            }, timeoutMs);
+        let command = `ATTACHSTREAM ${streamId} ${circuitId}`;
 
-            this.pendingNsRequests.set(normalizedFp, { resolve, reject, timeoutId });
-
-            // Send the command
-            this.msgAsync(`GETINFO ns/id/$${normalizedFp}`);
-        });
-
-        return this.parseRelayInfoResponse(response, normalizedFp);
-    }
-
-    private parseRelayInfoResponse(response: string, fingerprint: string): RelayInfo {
-        if (!response.startsWith('250+ns/id/')) {
-            throw new Error(`Failed to get relay info: ${response}`);
+        if (exitingHop !== undefined) {
+            command += ` HOP=${exitingHop}`;
         }
 
-        const lines = response.split('\n').map(line => line.trim());
+        await this.msgAsync(command);
+        const response = await this.defaultQueue.pop();
 
-        let flags: Flag[] = [];
-        let ip: string = '';
-        let orPort: number = 0;
-        let bandwidth: number = 0;
-        let nickname: string = '';
+        const { code, text } = parseFirstStatusCode(response);
 
-        for (const line of lines) {
-            // Extract flags from the line starting with 's '
-            if (line.startsWith('s ')) {
-                flags = line.substring(2).trim().split(' ').map(flag => Flag[flag as keyof typeof Flag]);
+        if (!Number.isNaN(code)) {
+            if (code === 552) {
+                console.warn(`[AnonCtrl] ATTACHSTREAM ${streamId} -> 552 Unknown stream; ignoring`);
+                return false;
             }
-
-            // Extract IP and ORPort from the line starting with 'r '
-            if (line.startsWith('r ')) {
-                const parts = line.split(' ');
-
-                if (parts.length >= 7) {
-                    nickname = parts[1];
-                    ip = parts[6];
-                    orPort = parseInt(parts[7], 10);
-                }
+            if (code === 555) {
+                console.warn(`[AnonCtrl] ATTACHSTREAM ${streamId} -> 555 Connection not managed; ignoring`);
+                return false;
             }
-
-            if (line.startsWith('w ')) {
-                bandwidth = parseInt(line.split('=')[1], 10);
+            if (!isOkCode(code)) {
+                throw new Error(`AttachStream failed (${code}): ${text}`);
             }
         }
 
-        return { fingerprint, nickname, ip, orPort, flags, bandwidth };
+        return true;
     }
 
-    end() {
-        this.client.write('QUIT\r\n');
-        this.client.end();
-    }
+    // ==================== Configuration ====================
 
     async disableStreamAttachment(): Promise<void> {
         await this.setConf('__LeaveStreamsUnattached', '1');
@@ -533,7 +331,7 @@ export class Control {
 
         for (const [key, val] of Object.entries(options)) {
             if (val === null || val === undefined) {
-                commandParts.push(key); // RESETCONF-style nulling
+                commandParts.push(key);
             } else if (typeof val === 'string') {
                 commandParts.push(`${key}="${val.trim()}"`);
             } else if (Array.isArray(val)) {
@@ -555,293 +353,131 @@ export class Control {
         }
     }
 
-    async attachStream(streamId: number, circuitId: number, exitingHop?: number): Promise<boolean> {
-        if (!this.client || this.client.destroyed || !this.client.writable) {
-            throw new Error('SocketClosed');
-        }
+    // ==================== Relay Management (delegated) ====================
 
-        let command = `ATTACHSTREAM ${streamId} ${circuitId}`;
-
-        if (exitingHop !== undefined) {
-            command += ` HOP=${exitingHop}`;
-        }
-
-        await this.msgAsync(command);
-        const response = await this.defaultQueue.pop();
-
-        const {code, text} = parseFirstStatusCode(response);
-
-        if (!Number.isNaN(code)) {
-            if (code === 552) {
-                console.warn(`[AnonCtrl] ATTACHSTREAM ${streamId} -> 552 Unknown stream; ignoring (stream likely closed)`);
-                return false;
-            }
-            if (code === 555) {
-                console.warn(`[AnonCtrl] ATTACHSTREAM ${streamId} -> 555 Connection is not managed by controller; ignoring`);
-                return false;
-            }
-            if (!isOkCode(code)) {
-                throw new Error(`AttachStream failed (${code}): ${text}`);
-            }
-        }
-
-        return true;
+    async getRelays(): Promise<RelayInfo[]> {
+        return this.relayManager.getRelays();
     }
 
-    private async attachListeners(): Promise<[EventType[], EventType[]]> {
-        const setEvents: EventType[] = [];
-        const failedEvents: EventType[] = [];
+    async getRelayInfo(fingerprint: string, timeoutMs: number = 10000): Promise<RelayInfo> {
+        return this.relayManager.getRelayInfo(fingerprint, timeoutMs);
+    }
 
-        if (!this.isAuthenticated || !this.client || this.client.destroyed) {
-            return [setEvents, failedEvents];
-        }
+    async getCountry(address: string, timeoutMs: number = 10000): Promise<string> {
+        return this.relayManager.getCountry(address, timeoutMs);
+    }
 
-        const eventTypes = Array.from(this.eventListeners?.keys() || []);
+    async populateCountries(relays: RelayInfo[]): Promise<void> {
+        return this.relayManager.populateCountries(relays);
+    }
 
+    async findFirstByCountry(relays: RelayInfo[], firstCount: number, ...countries: string[]): Promise<RelayInfo[]> {
+        return this.relayManager.findFirstByCountry(relays, firstCount, ...countries);
+    }
+
+    async getRelaysByCountries(...countries: string[]): Promise<RelayInfo[]> {
+        return this.relayManager.getRelaysByCountries(...countries);
+    }
+
+    async filterRelaysByCountries(relays: RelayInfo[], ...countries: string[]): Promise<RelayInfo[]> {
+        return this.relayManager.filterRelaysByCountries(relays, ...countries);
+    }
+
+    filterRelaysByFlags(relays: RelayInfo[], ...flags: Flag[]): RelayInfo[] {
+        return this.relayManager.filterRelaysByFlags(relays, ...flags);
+    }
+
+    async resolve(hostname: string): Promise<void> {
+        await this.msgAsync(`RESOLVE ${hostname}`);
+        await this.defaultQueue.pop();
+    }
+
+    // ==================== Connection Management ====================
+
+    end(): void {
+        this.client.write('QUIT\r\n');
+        this.client.end();
+    }
+
+    // ==================== Internal Message Handling ====================
+
+    async msgAsync(message: string): Promise<void> {
         try {
-            let isOk = await this.setEvents(eventTypes);
-            if (isOk) {
-                setEvents.push(...eventTypes);
-            } else {
-                for (const eventType of eventTypes) {
-                    isOk = await this.setEvents([eventType]);
-                    if (isOk) {
-                        setEvents.push(eventType);
-                    } else {
-                        failedEvents.push(eventType);
-                    }
-                }
-            }
+            this.client.write(`${message}${CRLF}`);
         } catch (err) {
-            console.error('Failed to attach listeners:', err);
-            failedEvents.push(...eventTypes);
-        }
-
-        return [setEvents, failedEvents];
-    }
-
-    private async attachEventListenersOrFail() {
-        if (this.eventListeners.size === 0) {
-            return;
-        }
-
-        const [, failedEventTypes] = await this.attachListeners();
-
-        if (failedEventTypes.length > 0) {
-            console.error('Failed to set events:', failedEventTypes);
-            for (const event of failedEventTypes) {
-                const callbacks = this.eventListeners.get(event);
-                if (callbacks) {
-                    this.eventListeners.delete(event);
-                }
+            if (!this.client || this.client.destroyed) {
+                this.end?.();
+                throw new Error('SocketClosed');
             }
-
-            throw new Error(`Failed to set events: ${failedEventTypes}`);
+            throw err;
         }
     }
 
-    async addEventListener(callback: Function, ...eventTypes: EventType[]): Promise<void> {
-        for (const eventType of eventTypes) {
-            const callbacks: Function[] = this.eventListeners.get(eventType) || [];
-            callbacks.push(callback);
-            this.eventListeners.set(eventType, callbacks);
-        }
+    private async msgLoop(): Promise<void> {
+        const pendingCountryRequests = this.relayManager.getPendingCountryRequests();
+        const pendingNsRequests = this.relayManager.getPendingNsRequests();
 
-        await this.attachEventListenersOrFail();
-    }
+        while (true) {
+            try {
+                let raw = await this.replyQueue.pop();
 
-    async removeEventListener(callback: Function): Promise<void> {
-        let eventTypesChanged = false;
-
-        for (const [eventType, callbacks] of this.eventListeners.entries()) {
-            const index = callbacks.indexOf(callback);
-            if (index !== -1) {
-                callbacks.splice(index, 1);
-            }
-
-            if (callbacks.length === 0) {
-                eventTypesChanged = true;
-                this.eventListeners.delete(eventType);
-            }
-        }
-
-        if (eventTypesChanged) {
-            await this.attachEventListenersOrFail();
-        }
-    }
-
-    /**
-     *  Reads a single complete Tor *reply* from the control socket.
-     *  - Handles 250/552 with -, +, and dot-terminated blocks
-     *  - Routes async events (650 / 650- / 650+ ... '.') to eventQueue
-     *  - Times out safely and cleans listeners
-     *
-     * * @param {number} timeoutMs - Timeout in milliseconds
-     * * @returns {Promise<string>} - Resolves with the complete reply string
-     */
-    private readReply(timeoutMs: number = 10000): Promise<string> {
-        return new Promise((resolve, reject) => {
-            // -------------------------------
-            // [1] Per-call state
-            // -------------------------------
-            let buffer = '';
-
-            // Reply assembly
-            let replyStatus: string | null = null;
-            let replyDivider: ' ' | '+' | '-' | null = null;
-            let inReplyDataBlock = false;
-            const replyLines: string[] = [];
-
-            // Event assembly
-            let inEventDataBlock = false;
-            let inEventContinuation = false;
-            const eventLines: string[] = [];
-
-            // -------------------------------
-            // [2] Helpers
-            // -------------------------------
-            const tidy = () => {
-                this.client.off('data', onData);
-                this.client.off('error', onError);
-                if (timer) clearTimeout(timer);
-            };
-
-            const pushEventNow = () => {
-                if (!eventLines.length) return;
-                this.eventQueue.push(eventLines.join('\r\n'));
-                this.eventNotice?.set?.();
-                eventLines.length = 0;
-                inEventDataBlock = false;
-                inEventContinuation = false;
-            };
-
-            const onError = (err: Error) => {
-                tidy();
-                reject(err);
-            };
-
-            let timer: NodeJS.Timeout;
-            if (timeoutMs > 0) {
-                timer = setTimeout(() => {
-                    tidy();
-                    reject(new Error('Timeout while waiting for Anon reply'));
-                }, timeoutMs);
-            }
-
-            // -------------------------------
-            // [3] Main data handler
-            // -------------------------------
-            const onData = (chunk: Buffer) => {
-                buffer += chunk.toString();
-                const lines = buffer.split('\r\n');
-                buffer = lines.pop() || '';
-
-                for (const raw of lines) {
-                    const line = raw;
-
-                    // --- [a] Handle asynchronous events ---
-                    if (!replyStatus && line.startsWith('650')) {
-                        const sep = line.charAt(3);
-                        const rest = line.slice(4);
-
-                        if (sep === ' ') {
-                            eventLines.push(rest);
-                            pushEventNow();
-                            continue;
-                        }
-                        if (sep === '+') {
-                            inEventDataBlock = true;
-                            eventLines.push(rest);
-                            continue;
-                        }
-                        if (sep === '-') {
-                            inEventContinuation = true;
-                            eventLines.push(rest);
-                            continue;
-                        }
-
-                        eventLines.push(rest);
-                        pushEventNow();
-                        continue;
+                if (raw.startsWith('ControllerError:')) {
+                    const msg = raw.slice('ControllerError:'.length).trim() || 'ControllerError';
+                    if (!this.client || this.client.destroyed) {
+                        this.end?.();
+                        throw new Error('SocketClosed');
                     }
+                    throw new Error(msg);
+                }
 
-                    // --- [b] Handle event data blocks (650+) ---
-                    if (inEventDataBlock) {
-                        if (line === '.') {
-                            inEventDataBlock = false;
-                            pushEventNow();
+                if (raw.startsWith('ReplyError:')) {
+                    const idx = raw.indexOf(CRLF);
+                    if (idx >= 0) {
+                        console.warn(`[AnonCtrl] ReplyError received: ${raw.slice(0, idx)}`);
+                        raw = raw.slice(idx + CRLF.length);
+                    }
+                }
+
+                // Route responses by correlation key
+                if (raw.startsWith("250 EXTENDED")) {
+                    this.extendQueue.push(raw);
+                } else if (raw.startsWith("250-ip-to-country/")) {
+                    const match = raw.match(/^250-ip-to-country\/([^=]+)=/);
+                    if (match) {
+                        const ip = match[1];
+                        const pending = pendingCountryRequests.get(ip);
+                        if (pending) {
+                            clearTimeout(pending.timeoutId);
+                            pending.resolve(raw);
+                            pendingCountryRequests.delete(ip);
                         } else {
-                            eventLines.push(line.startsWith('..') ? line.slice(1) : line);
+                            console.warn(`[AnonCtrl] Unexpected country response for ${ip}`);
                         }
-                        continue;
                     }
-
-                    // --- [c] Handle event continuations (650-) ---
-                    if (inEventContinuation) {
-                        if (line.startsWith('650-')) {
-                            eventLines.push(line.slice(4));
-                            continue;
+                } else if (raw.startsWith("250+ns/id/$")) {
+                    const match = raw.match(/^250\+ns\/id\/\$([A-F0-9]+)/i);
+                    if (match) {
+                        const fingerprint = match[1].toUpperCase();
+                        const pending = pendingNsRequests.get(fingerprint);
+                        if (pending) {
+                            clearTimeout(pending.timeoutId);
+                            pending.resolve(raw);
+                            pendingNsRequests.delete(fingerprint);
+                        } else {
+                            console.warn(`[AnonCtrl] Unexpected ns response for ${fingerprint}`);
                         }
-                        if (line.startsWith('650 ')) {
-                            eventLines.push(line.slice(4));
-                            pushEventNow();
-                            continue;
-                        }
-
-                        pushEventNow(); // unexpected line ends continuation
-                        // fall through to possible reply handling
                     }
-
-                    // --- [d] First reply status line (e.g., 250 OK, 552 ...) ---
-                    if (!replyStatus) {
-                        const m = line.match(/^(\d{3})([ +\-])(.*)$/);
-                        if (!m) continue; // ignore non-status noise
-                        replyStatus = m[1];
-                        replyDivider = m[2] as ' ' | '+' | '-';
-                    }
-
-                    // --- [e] Collect reply lines ---
-                    if (inReplyDataBlock && line.startsWith('..')) {
-                        replyLines.push(line.slice(1));
-                    } else {
-                        replyLines.push(line);
-                    }
-
-                    // --- [f] Terminal reply ---
-                    if (line.startsWith(replyStatus + ' ')) {
-                        tidy();
-                        return resolve(replyLines.join('\r\n'));
-                    }
-
-                    // --- [g] Manage block/continuation ---
-                    if (inReplyDataBlock) {
-                        if (line === '.') inReplyDataBlock = false;
-                        continue;
-                    }
-
-                    switch (replyDivider) {
-                        case ' ':
-                            tidy();
-                            return resolve(replyLines.join('\r\n'));
-                        case '+':
-                            inReplyDataBlock = true;
-                            break;
-                        case '-':
-                            // keep looping for more status lines
-                            break;
-                        default:
-                            tidy();
-                            return reject(new Error(`Unknown reply divider '${replyDivider}' in line: ${line}`));
-                    }
+                } else {
+                    this.defaultQueue.push(raw);
                 }
-            };
-
-            // -------------------------------
-            // [4] Register listeners
-            // -------------------------------
-            this.client.on('data', onData);
-            this.client.once('error', onError);
-        });
+            } catch (err) {
+                if (!this.client || this.client.destroyed) {
+                    this.end?.();
+                    throw new Error('SocketClosed');
+                }
+                throw err;
+            }
+        }
     }
 
     private createLoopTasks(): void {
@@ -849,9 +485,7 @@ export class Control {
             this.readerLoopTask = this.readerLoop();
         }
 
-        if (!this.eventLoopTask) {
-            this.eventLoopTask = this.eventLoop();
-        }
+        this.eventDispatcher.startEventLoop();
 
         if (!this.msgLoopTask) {
             this.msgLoopTask = this.msgLoop();
@@ -861,513 +495,19 @@ export class Control {
     private async readerLoop(): Promise<void> {
         while (this.client && !this.client.destroyed) {
             try {
-                // read one complete reply (events already routed inside readReply)
-                const raw = await this.readReply(0);
+                const raw = await this.parser.readReply(this.client, 0);
 
-                // soft-parse the first status line to detect 5xx
                 const { code, text } = parseFirstStatusCode(raw);
 
                 if (!Number.isNaN(code) && !isOkCode(code) && code >= 500) {
-                    // Protocol error reply (e.g., 552 Unrecognized event)
-                    // Log for observability; still push raw so msgAsync() can decide what to do.
-                    // (Optional) also push an annotated line to aid older callers.
-                    // console.warn(`[TorCtrl] ReplyError ${code}: ${text}`);
                     this.replyQueue.push(`ReplyError: ${code} ${text}${CRLF}${raw}`);
                 } else {
-                    // Normal 2xx (or unparseable but non-fatal) reply
                     this.replyQueue.push(raw);
                 }
             } catch (err: any) {
-                // Only transport/timeout/etc errors should reach here
-                const msg =
-                    err instanceof Error ? err.message : String(err);
+                const msg = err instanceof Error ? err.message : String(err);
                 this.replyQueue.push(`ControllerError: ${msg}`);
             }
         }
     }
-
-    // --- parser ---
-    private convertToEvent(eventMessage: string): Event {
-        const lines = eventMessage.split(CRLF);         // supports multi-line events
-        const header = lines[0] ?? '';
-        const extraLines = lines.slice(1);        // 650- / 650+ payload or extra KEY=VALUE lines
-
-        // Tokenize header + any extra lines; tolerate extra args/keywords in any order
-        const headerTokens = splitSmart(header);
-        const eventName = headerTokens[0] ?? '';
-        const allTokens = collectTokensFromLines([headerTokens.slice(1).join(' '), ...extraLines]);
-        const { positional, kv } = partitionKv(allTokens);
-
-        // Optional raw payload (useful for 650+ blocks like HS_DESC_CONTENT)
-        const payload = extraLines.length ? extraLines.join(CRLF) : undefined;
-
-        // Map to enum safely
-        const eventType = (EventType as any)[eventName] as EventType | undefined;
-
-        switch (eventType) {
-            case EventType.STREAM: {
-                // STREAM <StreamID> <Status> <CircID> <Target> [KEY=VAL ...]
-                const [streamIdStr, status, circIdStr, target, ...restPos] = positional;
-                // Merge any restPos that look like KEY=VAL back into kv (robust to weird splitting)
-                for (const t of restPos) {
-                    const i = t.indexOf('=');
-                    if (i > 0) kv[t.slice(0, i).toUpperCase()] = t.slice(i + 1);
-                }
-                return {
-                    type: EventType.STREAM,
-                    streamId: toInt(streamIdStr) ?? -1,
-                    status,
-                    circId: toInt(circIdStr),
-                    target,
-                    sourceAddr: kv['SOURCE_ADDR'] ?? null,
-                    purpose: kv['PURPOSE'] ?? null,
-                    reason: kv['REASON'] ?? null,
-                    remoteReason: kv['REMOTE_REASON'] ?? null,
-                    source: kv['SOURCE'] ?? null,
-                    // keep everything else just in case
-                    kv,
-                    payload,
-                    data: lines.join(" ") // todo - remove later
-                } as StreamEvent;
-            }
-
-            case EventType.ADDRMAP: {
-                // ADDRMAP <address> <newaddress> [expiry]
-                const [address, mappedAddress, expires] = positional;
-                return {
-                    type: EventType.ADDRMAP,
-                    address,
-                    mappedAddress,
-                    expires: expires ? new Date(expires) : undefined,
-                    streamId: kv['STREAMID'] ? toInt(kv['STREAMID']!) ?? undefined : undefined,
-                    cached: kv['CACHED'] ? kv['CACHED'] === 'YES' : undefined,
-                    // keep everything else just in case
-                    kv,
-                    payload,
-                    data: lines.join(" ")
-                } as AddrMapEvent;
-            }
-
-            case EventType.CIRC: {
-                // CIRC <CircID> <Status> [PathCommaList] [KEY=VAL ...]
-                // Path tokens begin with '$' (may be comma-separated)
-                const [circIdStr, status, ...rest] = positional;
-                const circId = toInt(circIdStr) ?? -1;
-
-                const path: CircHop[] = [];
-                let i = 0;
-                for (; i < rest.length; i++) {
-                    const tok = rest[i];
-                    if (!tok.startsWith('$')) break;
-                    for (const hop of tok.split(',')) {
-                        const [fpRaw, nick] = hop.split('~');
-                        const fp = fpRaw?.replace(/^\$/, '') ?? '';
-                        path.push({ fingerprint: fp, nickname: nick });
-                    }
-                }
-                // Any leftover positional tokens that are KEY=VAL — fold them into kv
-                for (; i < rest.length; i++) {
-                    const t = rest[i];
-                    const eq = t.indexOf('=');
-                    if (eq > 0) kv[t.slice(0, eq).toUpperCase()] = t.slice(eq + 1);
-                }
-
-                return {
-                    type: EventType.CIRC,
-                    circId,
-                    status: status as CircStatus,
-                    path,
-                    buildFlags: kv['BUILD_FLAGS'] ? kv['BUILD_FLAGS'].split(',') : undefined,
-                    purpose: kv['PURPOSE'],
-                    reason: kv['REASON'],
-                    remoteReason: kv['REMOTE_REASON'],
-                    timeCreated: kv['TIME_CREATED'] ? new Date(kv['TIME_CREATED'] + 'Z') : undefined,
-                    kv,
-                    payload,
-                    data: lines.join(" ") // todo - remove later
-                } as CircEvent;
-            }
-
-            default: {
-                // Generic, tolerant handler for any current/future event types
-                return {
-                    type: eventType ?? (eventName as any),
-                    args: positional,
-                    kv,
-                    payload,            // if this was a 650+ block, payload carries the body
-                    raw: eventMessage,  // keep raw for debugging/advanced handlers
-                } as any;
-            }
-        }
-    }
-
-    private async handleEvent(eventMessage: string): Promise<void> {
-        let event: any = null;
-        let eventType: EventType;
-
-        event = this.convertToEvent(eventMessage);  // you’ll implement this parser
-        eventType = event.type;
-
-        // Dispatch to listeners
-        const listeners = this.eventListeners.get(eventType);
-        if (listeners) {
-            for (const listener of listeners) {
-                try {
-                    const result = listener(event);
-                    if (result instanceof Promise) {
-                        await result;
-                    }
-                } catch (err) {
-                    console.warn(`Event listener for ${eventType} raised an error:`, err);
-                }
-            }
-        }
-    }
-
-    private async eventLoop(): Promise<void> {
-        let socketClosedAt: number | null = null;
-
-        while (true) {
-            try {
-                const eventMessage = await this.eventQueue.pop();
-
-                await this.handleEvent(eventMessage);
-
-                if (!this.client || this.client.destroyed) {
-                    if (!socketClosedAt) {
-                        socketClosedAt = Date.now();
-                    } else if (Date.now() - socketClosedAt > 100) {
-                        break;
-                    }
-                }
-            } catch (err) {
-                if (!this.client || this.client.destroyed) break;
-
-                try {
-                    await Promise.race([
-                        this.eventNotice.wait(),
-                        new Promise(resolve => setTimeout(resolve, 50)),
-                    ]);
-                } catch (err: any) {
-                    console.log("Event loop wait error:", err);
-                }
-                this.eventNotice.clear();
-            }
-        }
-    }
-
-    async getRelays(): Promise<RelayInfo[]> {
-        await this.msgAsync('GETINFO ns/all');
-
-        const response = await this.defaultQueue.pop();
-
-        if (!response.startsWith('250+ns/all=')) {
-            throw new Error('Invalid response format: ' + response);
-        }
-
-        const cleanedResponse = response
-            .replace(/^250\+ns\/all=/, '')
-            .replace(/250 OK$/, '')
-            .trim();
-
-        const relays: RelayInfo[] = [];
-        const lines = cleanedResponse.split('\n');
-
-        let current: Partial<RelayInfo> = {};
-
-        for (const line of lines) {
-            const trimmedLine = line.trim();
-
-            if (trimmedLine.startsWith('r ')) {
-                if (current.fingerprint) {
-                    relays.push(current as RelayInfo);
-                    current = {};
-                }
-                const [, nickname, fingerprint, , date, time, ip, orPort, dirPort] = trimmedLine.split(' ');
-
-                current.nickname = nickname;
-                current.fingerprint = this.base64ToHex(fingerprint);
-                current.published = new Date(`${date}T${time}Z`);
-                current.ip = ip;
-                current.orPort = parseInt(orPort, 10);
-                current.dirPort = parseInt(dirPort, 10);
-                current.flags = [];
-                current.bandwidth = 0;
-            } else if (trimmedLine.startsWith('s ')) {
-                current.flags = trimmedLine.substring(2).split(' ').map(flag => Flag[flag as keyof typeof Flag]);
-            } else if (trimmedLine.startsWith('w ')) {
-                const match = trimmedLine.match(/Bandwidth=(\d+)/);
-                if (match) {
-                    current.bandwidth = parseInt(match[1], 10);
-                }
-            }
-        }
-
-        if (current.fingerprint) {
-            relays.push(current as RelayInfo);
-        }
-
-        return relays;
-    }
-
-    async findFirstByCountry(relays: RelayInfo[], firstCount: number, ...countries: string[]): Promise<RelayInfo[]> {
-        const result: RelayInfo[] = [];
-
-        for (const relay of relays) {
-            if (firstCount > 0 && result.length >= firstCount) {
-                break;
-            }
-
-            try {
-                const country = await this.getCountry(relay.ip);
-                if (countries.includes(country)) {
-                    result.push(relay);
-                }
-            } catch (err) {
-                console.warn(`Failed to get country for ${relay.ip}:`, err);
-            }
-        }
-
-        return result;
-    }
-
-    async getRelaysByCountries(...countries: string[]): Promise<RelayInfo[]> {
-        const relays = await this.getRelays();
-        const result: RelayInfo[] = [];
-
-        for (const relay of relays) {
-            try {
-                const country = await this.getCountry(relay.ip);
-                if (countries.includes(country)) {
-                    result.push(relay);
-                }
-            } catch (err) {
-                console.warn(`Failed to get country for ${relay.ip}:`, err);
-            }
-        }
-
-        return result;
-    }
-
-    async populateCountries(relays: RelayInfo[]): Promise<void> {
-        // Initialize cache if needed
-        if (!this.countryCache) {
-            this.countryCache = new CountryCacheManager();
-            await this.countryCache.initialize();
-            this.countryCacheInitialized = true;
-        }
-
-        // First pass: populate from cache
-        for (const relay of relays) {
-            if (relay.country) {
-                continue;
-            }
-
-            const cached = this.countryCache.get(relay.ip);
-            if (cached) {
-                relay.country = cached;
-            }
-        }
-
-        // Second pass: queue uncached IPs for background resolution
-        const uncachedIps = relays
-            .filter(relay => !relay.country)
-            .map(relay => relay.ip);
-
-        if (uncachedIps.length > 0) {
-            console.log(`Queueing ${uncachedIps.length} IPs for background country resolution`);
-
-            // Use getCountry which now properly handles correlation
-            const resolver = async (ip: string) => {
-                return await this.getCountry(ip);
-            };
-
-            this.countryCache.populateInBackground(uncachedIps, resolver);
-        }
-    }
-
-    async filterRelaysByCountries(relays: RelayInfo[], ...countries: string[]): Promise<RelayInfo[]> {
-        countries = countries.map(country => country.toLowerCase());
-        const result: RelayInfo[] = [];
-
-        for (const relay of relays) {
-            try {
-                const country = await this.getCountry(relay.ip);
-                if (countries.includes(country)) {
-                    result.push(relay);
-                }
-            } catch (err) {
-                console.warn(`Failed to get country for ${relay.ip}:`, err);
-            }
-        }
-
-        return result;
-    }
-
-    filterRelaysByFlags(relays: RelayInfo[], ...flags: Flag[]): RelayInfo[] {
-        return relays.filter(relay => {
-            return flags.every(flag => relay.flags.includes(flag));
-        });
-    }
-
-    async getCountry(address: string, timeoutMs: number = 10000): Promise<string> {
-        // Initialize cache if needed
-        if (!this.countryCache) {
-            this.countryCache = new CountryCacheManager();
-            await this.countryCache.initialize();
-            this.countryCacheInitialized = true;
-        }
-
-        // Check cache first
-        const cached = this.countryCache.get(address);
-        if (cached) {
-            return cached;
-        }
-
-        // Check if there's already a pending request for this address
-        const existingPending = this.pendingCountryRequests.get(address);
-        if (existingPending) {
-            // Wait for existing request to complete
-            return new Promise<string>((resolve, reject) => {
-                const originalResolve = existingPending.resolve;
-                const originalReject = existingPending.reject;
-                existingPending.resolve = (value: string) => {
-                    originalResolve(value);
-                    resolve(this.parseCountryResponse(value));
-                };
-                existingPending.reject = (err: Error) => {
-                    originalReject(err);
-                    reject(err);
-                };
-            });
-        }
-
-        // Create correlation-based promise
-        const response = await new Promise<string>((resolve, reject) => {
-            const timeoutId = setTimeout(() => {
-                this.pendingCountryRequests.delete(address);
-                reject(new Error(`getCountry timeout for ${address} after ${timeoutMs}ms`));
-            }, timeoutMs);
-
-            this.pendingCountryRequests.set(address, { resolve, reject, timeoutId });
-
-            // Send the command
-            this.msgAsync(`GETINFO ip-to-country/${address}`);
-        });
-
-        const country = this.parseCountryResponse(response);
-
-        // Cache the result
-        this.countryCache.set(address, country);
-        await this.countryCache.saveCache();
-
-        return country;
-    }
-
-    private parseCountryResponse(response: string): string {
-        if (!response.startsWith('250-ip-to-country/')) {
-            throw new Error('Invalid response format: ' + response);
-        }
-
-        const cleanedResponse = response
-            .replace(/^250-ip-to-country\//, '')
-            .replace(/250 OK$/, '')
-            .trim();
-
-        const parts = cleanedResponse.split('=');
-        if (parts.length < 2) {
-            throw new Error('Invalid response format: ' + response);
-        }
-
-        return parts[1];
-    }
-
-    private base64ToHex(identity: string, checkIfFingerprint: boolean = true): string {
-        let decoded: Buffer;
-
-        try {
-            decoded = Buffer.from(identity, 'base64');
-        } catch (err) {
-            throw new Error(`Unable to decode identity string '${identity}'`);
-        }
-
-        const hex = decoded.toString('hex').toUpperCase();
-
-        if (checkIfFingerprint && !this.isValidFingerprint(hex)) {
-            throw new Error(`Decoded '${identity}' to '${hex}', which isn't a valid fingerprint`);
-        }
-
-        return hex;
-    }
-
-    private isValidFingerprint(hex: string): boolean {
-        return /^[A-F0-9]{40}$/.test(hex);
-    }
-}
-
-// --- helpers ---
-const CRLF = '\r\n' as const;
-const STATUS_LINE_RE = /^(\d{3})[ +\-](.*)$/;
-const isOkCode = (n: number) => n >= 200 && n < 300;
-
-function parseFirstStatusCode(raw: string): { code: number; text: string } {
-    const line = raw.split(CRLF)[0] ?? '';
-    const m = STATUS_LINE_RE.exec(line);
-    if (!m) return { code: NaN, text: line };
-    return { code: Number(m[1]), text: m[2] ?? '' };
-}
-
-function splitSmart(s: string): string[] {
-    // split on spaces but respect "quoted strings"
-    const out: string[] = [];
-    let cur = '';
-    let inQ = false;
-    for (let i = 0; i < s.length; i++) {
-        const ch = s[i];
-        if (ch === '"' ) {
-            inQ = !inQ;
-            continue;
-        }
-        if (!inQ && ch === ' ') {
-            if (cur) {
-                out.push(cur);
-                cur = '';
-            }
-            continue;
-        }
-        cur += ch;
-    }
-    if (cur) out.push(cur);
-    return out;
-}
-
-function collectTokensFromLines(lines: string[]): string[] {
-    const tokens: string[] = [];
-    for (const line of lines) {
-        if (!line) continue;
-        tokens.push(...splitSmart(line));
-    }
-    return tokens;
-}
-
-function partitionKv(tokens: string[]): { positional: string[]; kv: Record<string,string> } {
-    const positional: string[] = [];
-    const kv: Record<string,string> = {};
-    for (const t of tokens) {
-        const eq = t.indexOf('=');
-        if (eq > 0) {
-            const k = t.slice(0, eq).toUpperCase();
-            const v = t.slice(eq + 1);
-            kv[k] = v;
-        } else {
-            positional.push(t);
-        }
-    }
-    return { positional, kv };
-}
-
-function toInt(x?: string): number | undefined {
-    if (x == null) return undefined;
-    const n = Number(x);
-    return Number.isFinite(n) ? n : undefined;
 }

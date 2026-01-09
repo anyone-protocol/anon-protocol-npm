@@ -104,8 +104,8 @@ export class Process extends EventEmitter {
 
   private setupTimeoutHandler(reject: (reason: Error) => void){
     const timeoutId = setTimeout(() => {
-      reject(new Error('Anon failed to bootstrap within 60 seconds'));
-    }, 60000);
+      reject(new Error('Anon failed to bootstrap within 180 seconds'));
+    }, 180000);
 
     const cleanup = () => {
       clearTimeout(timeoutId);
@@ -264,23 +264,20 @@ export class Process extends EventEmitter {
 
     child.stdout.on('data', (data) => {
       const logLines = data.toString().split('\n');
-    
+
       for (const line of logLines) {
         const bootstrapMatch = line.match(/Bootstrapped (\d+)%.*?: (.+)/);
         const versionMatch = line.match(/Anon (\d+\.\d+\.\d+[\w.-]+) .* running on/);
-        
+
         if (this.options?.displayLog === true) {
           console.log(line);
           if (bootstrapMatch) {
-            const [, percentage, status] = bootstrapMatch;
+            const [, percentage] = bootstrapMatch;
             if (onBootstrap) {
               onBootstrap(parseInt(percentage, 10));
             }
           }
         } else {
-          const bootstrapMatch = line.match(/Bootstrapped (\d+)%.*?: (.+)/);
-          const versionMatch = line.match(/Anon (\d+\.\d+\.\d+[\w.-]+) .* running on/);
-          
           if (bootstrapMatch) {
             const [, percentage, status] = bootstrapMatch;
             const formattedPercentage = chalk.green(`${percentage}%`);
@@ -290,13 +287,11 @@ export class Process extends EventEmitter {
             if (onBootstrap) {
               onBootstrap(parseInt(percentage, 10));
             }
-
           } else if (line.match(/\[err\]/i)) {
             console.log(chalk.red(line));
-
           } else if (versionMatch) {
             const [, version] = versionMatch;
-            console.log(chalk.yellow(`Running Anon version ${version} `));
+            console.log(chalk.yellow(`Running Anon version ${version}`));
           }
         }
       }
