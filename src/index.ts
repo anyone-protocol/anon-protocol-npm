@@ -1,5 +1,6 @@
 export * from './config';
 export * from './control';
+export * from './country-cache';
 export * from './models';
 export * from './process';
 export * from './proxy';

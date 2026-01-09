@@ -2,19 +2,47 @@ import { AddrMapEvent, CircEvent, CircHop, CircStatus, CircuitStatus, Event, Eve
 import * as net from 'net';
 import { AsyncEvent, AsyncQueue } from './queue';
 import { Buffer } from 'buffer';
+import { CountryCacheManager } from './country-cache';
+
+// Types for pending request correlation
+type PendingRequest<T> = {
+    resolve: (value: T) => void;
+    reject: (error: Error) => void;
+    timeoutId: NodeJS.Timeout;
+};
 
 export class Control {
     private readonly client: net.Socket;
     private isAuthenticated: boolean = false;
     private eventListeners: Map<EventType, Function[]> = new Map();
 
-    private msgLock = new AsyncQueue<void>();
     private replyQueue = new AsyncQueue<string>();
     private eventQueue = new AsyncQueue<string>();
+    private defaultQueue = new AsyncQueue<string>();
+    private extendQueue = new AsyncQueue<string>();  // For EXTENDCIRCUIT responses (can't correlate until response)
     private eventNotice = new AsyncEvent();
+
+    // Correlation-based pending request maps
+    private pendingCountryRequests = new Map<string, PendingRequest<string>>();
+    private pendingNsRequests = new Map<string, PendingRequest<string>>();
 
     private readerLoopTask: Promise<void> | null = null;
     private eventLoopTask: Promise<void> | null = null;
+    private msgLoopTask: Promise<void> | null = null;
+
+    private countryCache: CountryCacheManager | null = null;
+    private countryCacheInitialized = false;
+
+    private circuitEventListenerEnabled: boolean = false;
+    private circuitEventQueue = new AsyncQueue<CircEvent>();
+    private circuitEventListener = (event: Event) => {
+        if (event.type === EventType.CIRC) {
+            this.circuitEventQueue.push(event as CircEvent);
+        }
+    };
+
+    // Default timeout for pending requests (10 seconds)
+    private requestTimeout = 10000;
 
     constructor(host = '127.0.0.1', port = 9051) {
         console.log('Connecting to Anon Control Port at', host, port);
@@ -27,7 +55,8 @@ export class Control {
     }
 
     async authenticate(password: string = 'password'): Promise<void> {
-        const response = await this.msg(`AUTHENTICATE "${password}"`);
+        await this.msgAsync(`AUTHENTICATE "${password}"`);
+        const response = await this.defaultQueue.pop();
 
         if (response.startsWith('250 OK')) {
             this.isAuthenticated = true;
@@ -37,6 +66,16 @@ export class Control {
         } else {
             throw new Error(`Unexpected response: ${response}`);
         }
+    }
+
+    async enableCircuitEventListener(): Promise<void> {
+        await this.addEventListener(this.circuitEventListener, EventType.CIRC);
+        this.circuitEventListenerEnabled = true;
+    }
+
+    async disableCircuitEventListener(): Promise<void> {
+        await this.removeEventListener(this.circuitEventListener);
+        this.circuitEventListenerEnabled = false;
     }
 
     /**
@@ -57,7 +96,8 @@ export class Control {
      */
     async setEvents(events: EventType[]): Promise<boolean> {
         const command = `SETEVENTS ${events.join(' ')}`;
-        const response = await this.msg(command);
+        await this.msgAsync(command);
+        const response = await this.defaultQueue.pop();
 
         if (response.startsWith('250 OK')) {
             return true;
@@ -68,10 +108,12 @@ export class Control {
     }
 
     async circuitStatus(): Promise<CircuitStatus[]> {
-        return this.msg('GETINFO circuit-status').then(response => {
+        await this.msgAsync('GETINFO circuit-status')
+
+        return await this.defaultQueue.pop().then(response => {
 
             if (!response.startsWith('250+circuit-status=') && !response.startsWith('250 OK')) {
-                throw new Error('Invalid response format');
+                throw new Error('Invalid response format: ' + response);
             }
 
             const cleanedResponse = response
@@ -133,79 +175,172 @@ export class Control {
         return circuit;
     }
 
-    async msg(message: string, expectOk: boolean = false): Promise<string> {
-        this.msgLock.push(); // serialize command → reply
+    async msgAsync(message: string, expectOk: boolean = false): Promise<void> {
         try {
             // --- Send the command ---
             this.client.write(`${message}${CRLF}`);
-
-            // --- Await one full reply ---
-            let raw = await this.replyQueue.pop();
-
-            // --- Handle transport-level errors bubbled from readerLoop ---
-            if (raw.startsWith('ControllerError:')) {
-                const msg = raw.slice('ControllerError:'.length).trim() || 'ControllerError';
-                if (!this.client || this.client.destroyed) {
-                    this.end?.();
-                    throw new Error('SocketClosed');
-                }
-                throw new Error(msg);
-            }
-
-            // --- Handle annotated 5xx replies from readerLoop ---
-            if (raw.startsWith('ReplyError:')) {
-                const idx = raw.indexOf(CRLF);
-                if (idx >= 0) {
-                    const annotated = raw.slice(0, idx);
-                    console.warn(`[AnonCtrl] ReplyError received: ${annotated}`);
-                    raw = raw.slice(idx + CRLF.length);
-                }
-            }
-
-            // --- Optionally enforce OK replies (2xx) ---
-            if (expectOk) {
-                const { code, text } = parseFirstStatusCode(raw);
-                if (!Number.isFinite(code) || !isOkCode(code)) {
-                    console.error(`[AnonCtrl] Command failed (${code || '???'}): ${text}`);
-                    throw new Error(`Command failed (${Number.isFinite(code) ? code : '???'}): ${text}`);
-                }
-            }
-
-            return raw;
         } catch (err) {
             if (!this.client || this.client.destroyed) {
                 this.end?.();
                 throw new Error('SocketClosed');
             }
             throw err;
-        } finally {
-            await this.msgLock.pop();
         }
     }
 
+    async msgLoop(expectOk: boolean = false): Promise<void> {
+        while (true) {
+            try {
+                // --- Await one full reply ---
+                let raw = await this.replyQueue.pop();
+
+                // --- Handle transport-level errors bubbled from readerLoop ---
+                if (raw.startsWith('ControllerError:')) {
+                    const msg = raw.slice('ControllerError:'.length).trim() || 'ControllerError';
+                    if (!this.client || this.client.destroyed) {
+                        this.end?.();
+                        throw new Error('SocketClosed');
+                    }
+                    throw new Error(msg);
+                }
+
+                // --- Handle annotated 5xx replies from readerLoop ---
+                if (raw.startsWith('ReplyError:')) {
+                    const idx = raw.indexOf(CRLF);
+                    if (idx >= 0) {
+                        const annotated = raw.slice(0, idx);
+                        console.warn(`[AnonCtrl] ReplyError received: ${annotated}`);
+                        raw = raw.slice(idx + CRLF.length);
+                    }
+                }
+
+                // --- Optionally enforce OK replies (2xx) ---
+                if (expectOk) {
+                    const { code, text } = parseFirstStatusCode(raw);
+                    if (!Number.isFinite(code) || !isOkCode(code)) {
+                        console.error(`[AnonCtrl] Command failed (${code || '???'}): ${text}`);
+                        throw new Error(`Command failed (${Number.isFinite(code) ? code : '???'}): ${text}`);
+                    }
+                }
+
+                // Route response to correct pending request by correlation key
+                if (raw.startsWith("250 EXTENDED")) {
+                    // EXTENDCIRCUIT responses go to a FIFO queue (can't correlate until we get the response)
+                    this.extendQueue.push(raw);
+                } else if (raw.startsWith("250-ip-to-country/")) {
+                    // Extract IP from "250-ip-to-country/X.X.X.X=XX"
+                    const match = raw.match(/^250-ip-to-country\/([^=]+)=/);
+                    if (match) {
+                        const ip = match[1];
+                        const pending = this.pendingCountryRequests.get(ip);
+                        if (pending) {
+                            clearTimeout(pending.timeoutId);
+                            pending.resolve(raw);
+                            this.pendingCountryRequests.delete(ip);
+                        } else {
+                            // Unexpected response - log and discard
+                            console.warn(`[AnonCtrl] Unexpected country response for ${ip}, no pending request`);
+                        }
+                    } else {
+                        console.warn(`[AnonCtrl] Could not parse country response: ${raw}`);
+                    }
+                } else if (raw.startsWith("250+ns/id/$")) {
+                    // Extract fingerprint from "250+ns/id/$FINGERPRINT"
+                    const match = raw.match(/^250\+ns\/id\/\$([A-F0-9]+)/i);
+                    if (match) {
+                        const fingerprint = match[1].toUpperCase();
+                        const pending = this.pendingNsRequests.get(fingerprint);
+                        if (pending) {
+                            clearTimeout(pending.timeoutId);
+                            pending.resolve(raw);
+                            this.pendingNsRequests.delete(fingerprint);
+                        } else {
+                            // Unexpected response - log and discard
+                            console.warn(`[AnonCtrl] Unexpected ns response for ${fingerprint}, no pending request`);
+                        }
+                    } else {
+                        console.warn(`[AnonCtrl] Could not parse ns response: ${raw}`);
+                    }
+                } else {
+                    // Default queue for all other responses
+                    this.defaultQueue.push(raw);
+                }
+            } catch (err) {
+                if (!this.client || this.client.destroyed) {
+                    this.end?.();
+                    throw new Error('SocketClosed');
+                }
+                throw err;
+            }
+        }
+    }
+
+    // async msg(message: string, expectOk: boolean = false): Promise<string> {
+    //     this.msgLock.push(); // serialize command → reply
+    //     try {
+    //         // --- Send the command ---
+    //         this.client.write(`${message}${CRLF}`);
+    //
+    //         // --- Await one full reply ---
+    //         let raw = await this.replyQueue.pop();
+    //
+    //         // --- Handle transport-level errors bubbled from readerLoop ---
+    //         if (raw.startsWith('ControllerError:')) {
+    //             const msg = raw.slice('ControllerError:'.length).trim() || 'ControllerError';
+    //             if (!this.client || this.client.destroyed) {
+    //                 this.end?.();
+    //                 throw new Error('SocketClosed');
+    //             }
+    //             throw new Error(msg);
+    //         }
+    //
+    //         // --- Handle annotated 5xx replies from readerLoop ---
+    //         if (raw.startsWith('ReplyError:')) {
+    //             const idx = raw.indexOf(CRLF);
+    //             if (idx >= 0) {
+    //                 const annotated = raw.slice(0, idx);
+    //                 console.warn(`[AnonCtrl] ReplyError received: ${annotated}`);
+    //                 raw = raw.slice(idx + CRLF.length);
+    //             }
+    //         }
+    //
+    //         // --- Optionally enforce OK replies (2xx) ---
+    //         if (expectOk) {
+    //             const { code, text } = parseFirstStatusCode(raw);
+    //             if (!Number.isFinite(code) || !isOkCode(code)) {
+    //                 console.error(`[AnonCtrl] Command failed (${code || '???'}): ${text}`);
+    //                 throw new Error(`Command failed (${Number.isFinite(code) ? code : '???'}): ${text}`);
+    //             }
+    //         }
+    //
+    //         return raw;
+    //     } catch (err) {
+    //         if (!this.client || this.client.destroyed) {
+    //             this.end?.();
+    //             throw new Error('SocketClosed');
+    //         }
+    //         throw err;
+    //     } finally {
+    //         await this.msgLock.pop();
+    //     }
+    // }
+
     async resolve(hostname: string): Promise<void> {
-        await this.msg(`RESOLVE ${hostname}`);
+        await this.msgAsync(`RESOLVE ${hostname}`);
+        await this.defaultQueue.pop();
     }
 
     async extendCircuit(options: ExtendCircuitOptions = {}): Promise<number> {
+        if (!this.circuitEventListenerEnabled) {
+            console.warn("Circuit event listener is not enabled. Enabling it now.");
+            throw new Error("Circuit event listener must be enabled to use extendCircuit with awaitBuild. Please call enableCircuitEventListener() first.");
+        }
+
         let circuitId: number = options.circuitId ?? 0;
         const serverSpecs: string[] = options.serverSpecs ?? [];
         const purpose: Purpose = options.purpose ?? 'general';
         const awaitBuild: boolean = options.awaitBuild ?? false;
         const buildTimeout: number = options.buildTimeout ?? 60000;
-
-        let queue;
-        let eventListener: Function | null = null;
-        if (awaitBuild) {
-            queue = new AsyncQueue<CircEvent>();
-
-            eventListener = (event: Event) => {
-                if (event.type === EventType.CIRC) {
-                    queue.push(event as CircEvent);
-                }
-            };
-            await this.addEventListener(eventListener, EventType.CIRC);
-        }
 
         let command = `EXTENDCIRCUIT ${circuitId}`;
 
@@ -217,10 +352,12 @@ export class Control {
             command += ` purpose=${purpose}`;
         }
 
-        const response = await this.msg(command);
+        await this.msgAsync(command);
+
+        const response = await this.extendQueue.pop();
 
         if (!response.startsWith('250 EXTENDED')) {
-            throw new Error('Failed to extend circuit');
+            throw new Error('Failed to extend circuit. Response: ' + response);
         }
 
         if (circuitId === 0) {
@@ -242,10 +379,10 @@ export class Control {
                     let numb = 0;
 
                     while (!received) {
-                        const event = await queue!.pop();
+                        const event = await this.circuitEventQueue.pop();
 
                         if (event.circId === circuitId) {
-                            console.log('Received event', event);
+                            // console.log('Received event', event);
                             numb++;
                             if (numb >= serverSpecs.length && (event.status == CircStatus.EXTENDED || event.status == CircStatus.BUILT)) {
                                 received = true;
@@ -262,13 +399,7 @@ export class Control {
                 }
             });
 
-            try {
-                // Race between timeout and circuit build
-                await Promise.race([waitPromise, timeoutPromise]);
-            } finally {
-                // Always cleanup the event listener
-                await this.removeEventListener(eventListener!);
-            }
+            await Promise.race([waitPromise, timeoutPromise]);
         }
 
         return circuitId;
@@ -277,19 +408,55 @@ export class Control {
     async closeCircuit(circuitId: number): Promise<void> {
         const command = `CLOSECIRCUIT ${circuitId}`;
 
-        const response = await this.msg(command);
+        await this.msgAsync(command);
+        const response = await this.defaultQueue.pop();
 
         if (!response.startsWith('250')) {
             throw new Error(`Failed to close circuit: ${response}`);
         }
     }
 
-    async getRelayInfo(fingerprint: string): Promise<RelayInfo> {
-        const command = `GETINFO ns/id/$${fingerprint}`;
-        const response = await this.msg(command);
+    async getRelayInfo(fingerprint: string, timeoutMs: number = 10000): Promise<RelayInfo> {
+        // Normalize fingerprint to uppercase
+        const normalizedFp = fingerprint.toUpperCase();
 
+        // Check if there's already a pending request for this fingerprint
+        const existingPending = this.pendingNsRequests.get(normalizedFp);
+        if (existingPending) {
+            // Wait for existing request to complete
+            return new Promise<RelayInfo>((resolve, reject) => {
+                const originalResolve = existingPending.resolve;
+                const originalReject = existingPending.reject;
+                existingPending.resolve = (value: string) => {
+                    originalResolve(value);
+                    resolve(this.parseRelayInfoResponse(value, normalizedFp));
+                };
+                existingPending.reject = (err: Error) => {
+                    originalReject(err);
+                    reject(err);
+                };
+            });
+        }
+
+        // Create correlation-based promise
+        const response = await new Promise<string>((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+                this.pendingNsRequests.delete(normalizedFp);
+                reject(new Error(`getRelayInfo timeout for ${normalizedFp} after ${timeoutMs}ms`));
+            }, timeoutMs);
+
+            this.pendingNsRequests.set(normalizedFp, { resolve, reject, timeoutId });
+
+            // Send the command
+            this.msgAsync(`GETINFO ns/id/$${normalizedFp}`);
+        });
+
+        return this.parseRelayInfoResponse(response, normalizedFp);
+    }
+
+    private parseRelayInfoResponse(response: string, fingerprint: string): RelayInfo {
         if (!response.startsWith('250+ns/id/')) {
-            throw new Error(`Failed to get relay address: ${response}`);
+            throw new Error(`Failed to get relay info: ${response}`);
         }
 
         const lines = response.split('\n').map(line => line.trim());
@@ -379,7 +546,9 @@ export class Control {
         }
 
         const command = commandParts.join(' ');
-        const response = await this.msg(command);
+        await this.msgAsync(command);
+
+        const response = await this.defaultQueue.pop();
 
         if (!response.startsWith('250 OK')) {
             throw new Error(`SETCONF/RESETCONF failed: ${response}`);
@@ -397,7 +566,8 @@ export class Control {
             command += ` HOP=${exitingHop}`;
         }
 
-        const response = await this.msg(command);
+        await this.msgAsync(command);
+        const response = await this.defaultQueue.pop();
 
         const {code, text} = parseFirstStatusCode(response);
 
@@ -682,6 +852,10 @@ export class Control {
         if (!this.eventLoopTask) {
             this.eventLoopTask = this.eventLoop();
         }
+
+        if (!this.msgLoopTask) {
+            this.msgLoopTask = this.msgLoop();
+        }
     }
 
     private async readerLoop(): Promise<void> {
@@ -695,7 +869,7 @@ export class Control {
 
                 if (!Number.isNaN(code) && !isOkCode(code) && code >= 500) {
                     // Protocol error reply (e.g., 552 Unrecognized event)
-                    // Log for observability; still push raw so msg() can decide what to do.
+                    // Log for observability; still push raw so msgAsync() can decide what to do.
                     // (Optional) also push an annotated line to aid older callers.
                     // console.warn(`[TorCtrl] ReplyError ${code}: ${text}`);
                     this.replyQueue.push(`ReplyError: ${code} ${text}${CRLF}${raw}`);
@@ -883,10 +1057,12 @@ export class Control {
     }
 
     async getRelays(): Promise<RelayInfo[]> {
-        const response = await this.msg('GETINFO ns/all');
+        await this.msgAsync('GETINFO ns/all');
+
+        const response = await this.defaultQueue.pop();
 
         if (!response.startsWith('250+ns/all=')) {
-            throw new Error('Invalid response format');
+            throw new Error('Invalid response format: ' + response);
         }
 
         const cleanedResponse = response
@@ -974,16 +1150,39 @@ export class Control {
     }
 
     async populateCountries(relays: RelayInfo[]): Promise<void> {
+        // Initialize cache if needed
+        if (!this.countryCache) {
+            this.countryCache = new CountryCacheManager();
+            await this.countryCache.initialize();
+            this.countryCacheInitialized = true;
+        }
+
+        // First pass: populate from cache
         for (const relay of relays) {
             if (relay.country) {
                 continue;
             }
 
-            try {
-                relay.country = await this.getCountry(relay.ip);
-            } catch (err) {
-                console.warn(`Failed to get country for ${relay.ip}:`, err);
+            const cached = this.countryCache.get(relay.ip);
+            if (cached) {
+                relay.country = cached;
             }
+        }
+
+        // Second pass: queue uncached IPs for background resolution
+        const uncachedIps = relays
+            .filter(relay => !relay.country)
+            .map(relay => relay.ip);
+
+        if (uncachedIps.length > 0) {
+            console.log(`Queueing ${uncachedIps.length} IPs for background country resolution`);
+
+            // Use getCountry which now properly handles correlation
+            const resolver = async (ip: string) => {
+                return await this.getCountry(ip);
+            };
+
+            this.countryCache.populateInBackground(uncachedIps, resolver);
         }
     }
 
@@ -1011,16 +1210,63 @@ export class Control {
         });
     }
 
-    async getCountry(address: string, timeoutMs: number = 1000): Promise<string> {
-        const msgPromise = this.msg(`GETINFO ip-to-country/${address}`);
-        const timeout = new Promise<string>((_, reject) =>
-            setTimeout(() => reject(new Error('getCountry timeout')), timeoutMs)
-        );
+    async getCountry(address: string, timeoutMs: number = 10000): Promise<string> {
+        // Initialize cache if needed
+        if (!this.countryCache) {
+            this.countryCache = new CountryCacheManager();
+            await this.countryCache.initialize();
+            this.countryCacheInitialized = true;
+        }
 
-        const response = await Promise.race([msgPromise, timeout]);
+        // Check cache first
+        const cached = this.countryCache.get(address);
+        if (cached) {
+            return cached;
+        }
 
+        // Check if there's already a pending request for this address
+        const existingPending = this.pendingCountryRequests.get(address);
+        if (existingPending) {
+            // Wait for existing request to complete
+            return new Promise<string>((resolve, reject) => {
+                const originalResolve = existingPending.resolve;
+                const originalReject = existingPending.reject;
+                existingPending.resolve = (value: string) => {
+                    originalResolve(value);
+                    resolve(this.parseCountryResponse(value));
+                };
+                existingPending.reject = (err: Error) => {
+                    originalReject(err);
+                    reject(err);
+                };
+            });
+        }
+
+        // Create correlation-based promise
+        const response = await new Promise<string>((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+                this.pendingCountryRequests.delete(address);
+                reject(new Error(`getCountry timeout for ${address} after ${timeoutMs}ms`));
+            }, timeoutMs);
+
+            this.pendingCountryRequests.set(address, { resolve, reject, timeoutId });
+
+            // Send the command
+            this.msgAsync(`GETINFO ip-to-country/${address}`);
+        });
+
+        const country = this.parseCountryResponse(response);
+
+        // Cache the result
+        this.countryCache.set(address, country);
+        await this.countryCache.saveCache();
+
+        return country;
+    }
+
+    private parseCountryResponse(response: string): string {
         if (!response.startsWith('250-ip-to-country/')) {
-            throw new Error('Invalid response format');
+            throw new Error('Invalid response format: ' + response);
         }
 
         const cleanedResponse = response
@@ -1030,7 +1276,7 @@ export class Control {
 
         const parts = cleanedResponse.split('=');
         if (parts.length < 2) {
-            throw new Error('Invalid response format');
+            throw new Error('Invalid response format: ' + response);
         }
 
         return parts[1];
