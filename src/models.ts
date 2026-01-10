@@ -156,3 +156,103 @@ export interface CircEvent extends Event {
     remoteReason?: string;
     timeCreated?: Date;
 }
+
+// ============================================
+// StateManager Types
+// ============================================
+
+/**
+ * Internal circuit state tracking with extensible metadata
+ */
+export interface CircuitEntry {
+    id: number;
+    path?: CircHop[];
+    status?: string;
+    country?: string;
+    createdAt: Date;
+    metadata: Record<string, unknown>;
+}
+
+/**
+ * Internal stream state tracking with extensible metadata
+ */
+export interface StreamEntry {
+    id: number;
+    target?: string;
+    status?: string;
+    circId?: number;
+    metadata: Record<string, unknown>;
+}
+
+/**
+ * Configuration options for StateManager
+ */
+export interface StateManagerConfig {
+    /** Automatically subscribe to CIRC, STREAM, ADDRMAP events (default: true) */
+    autoSubscribeEvents?: boolean;
+    /** Cache relay information on initialize (default: true) */
+    cacheRelays?: boolean;
+    /** Populate country information for exit relays (default: true) */
+    populateCountries?: boolean;
+}
+
+/**
+ * Events emitted by StateManager
+ */
+export enum StateManagerEvent {
+    CIRCUIT_NEW = 'circuit:new',
+    CIRCUIT_BUILT = 'circuit:built',
+    CIRCUIT_CLOSED = 'circuit:closed',
+    CIRCUIT_FAILED = 'circuit:failed',
+    STREAM_NEW = 'stream:new',
+    STREAM_ATTACHED = 'stream:attached',
+    STREAM_CLOSED = 'stream:closed',
+    RELAYS_UPDATED = 'relays:updated',
+}
+
+// ============================================
+// VPNManager Types
+// ============================================
+
+/**
+ * Configuration for a VPN target - defines routing rules for a specific address
+ */
+export interface VPNTarget {
+    /** The address to route (hostname, e.g., 'api.example.com') */
+    address: string;
+    /** Preferred exit countries for this target (ISO 2-letter codes, lowercase) */
+    exitCountries: string[];
+    /** Minimum number of circuits to maintain for this target */
+    minCircuits: number;
+    /** Maximum number of circuits to build for this target */
+    maxCircuits: number;
+}
+
+/**
+ * Configuration options for VPNManager
+ */
+export interface VPNManagerConfig {
+    /** VPN targets to manage */
+    targets: VPNTarget[];
+    /** Health monitor interval in milliseconds (default: 10000, 0 to disable) */
+    healthMonitorInterval?: number;
+}
+
+/**
+ * Events emitted by VPNManager
+ */
+export enum VPNManagerEvent {
+    TARGET_READY = 'target:ready',
+    TARGET_DEGRADED = 'target:degraded',
+    STREAM_ROUTED = 'stream:routed',
+}
+
+/**
+ * Metrics returned by VPNManager
+ */
+export interface VPNMetrics {
+    totalCircuits: number;
+    totalStreams: number;
+    circuitsByTarget: Record<string, number>;
+    circuitsByStatus: Record<string, number>;
+}

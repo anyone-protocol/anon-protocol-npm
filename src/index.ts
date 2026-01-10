@@ -7,3 +7,5 @@ export * from './proxy';
 export * from './socks';
 export * from './utils';
 export * from './errorTypes';
+export * from './state-manager';
+export * from './vpn-manager';
