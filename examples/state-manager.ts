@@ -1,4 +1,4 @@
-import {CircEvent, CircHop, Control, EventType, Flag, Process, RelayInfo, StreamEvent} from '../src';
+import {AddrMapEvent, CircEvent, CircHop, Control, EventType, Flag, Process, RelayInfo, StreamEvent} from '../src';
 import {randomInt} from "node:crypto";
 
 type StreamEntry = {
@@ -33,10 +33,15 @@ class StateManager {
     private circuits: Map<number, CircuitEntry> = new Map();
     private healthMonitorInterval?: NodeJS.Timeout;
 
+    // IP to hostname mapping (from ADDRMAP events)
+    private ipToHostname: Map<string, string> = new Map();
+    // Track logged connections to avoid duplicates (hostname:circId)
+    private loggedConnections: Set<string> = new Set();
+
     // VPN Configuration
     private targets: VPNTarget[] = [
         { address: 'ip-api.com', exitCountries: ['de'], minCircuits: 1, maxCircuits: 3 },
-        { address: 'api.ipify.org', exitCountries: ['us'], minCircuits: 1, maxCircuits: 3 },
+        { address: 'api.ipify.org', exitCountries: ['fr'], minCircuits: 1, maxCircuits: 3 },
         { address: 'ipinfo.io', exitCountries: ['nl'], minCircuits: 1, maxCircuits: 3 },
     ];
 
@@ -50,6 +55,9 @@ class StateManager {
     private availableRelays: RelayInfo[] = [];
     private exitsByCountry: Map<string, RelayInfo[]> = new Map();
     private guards: RelayInfo[] = [];
+
+    // Track which target a circuit is being built for (circuitId -> target address)
+    private pendingCircuitTargets: Map<number, string> = new Map();
 
     constructor() {
         this.anon = new Process({displayLog: true, socksPort: 9050, controlPort: 9051});
@@ -70,17 +78,17 @@ class StateManager {
             console.log("Stream auto-attachment disabled - we will attach streams manually");
             await this.control.enableCircuitEventListener();
 
-            // Initialize relay information (now safe - correlation-based request handling)
-            // await this.initializeRelays();
-
-            // Build initial circuits for all targets
-            // await this.buildInitialCircuits();
-
-            // Set up event listeners
+            // Set up event listeners FIRST so we can track circuits
             await this.setupEventListeners();
 
+            // Initialize relay information (now safe - correlation-based request handling)
+            await this.initializeRelays();
+
+            // Build initial circuits for all targets
+            await this.buildInitialCircuits();
+
             // Start circuit health monitor
-            // this.startCircuitHealthMonitor();
+            this.startCircuitHealthMonitor();
 
             console.log('Anon state manager is active. Press Ctrl+C to quit.');
             console.log(`Managing ${this.targets.length} targets with ${this.circuits.size} circuits`);
@@ -137,7 +145,7 @@ class StateManager {
 
             for (let i = 0; i < target.minCircuits; i++) {
                 try {
-                    this.buildCircuitForTarget(target);
+                    await this.buildCircuitForTarget(target);
                 } catch (error) {
                     console.error(`  Failed to build circuit ${i + 1}:`, error);
                 }
@@ -162,14 +170,18 @@ class StateManager {
         console.log(`    Exit:   ${exit.nickname} (${exit.country})`);
 
         try {
+            // Fingerprints need $ prefix for EXTENDCIRCUIT command
             const circuitId = await this.control.extendCircuit({
                 circuitId: 0,
-                serverSpecs: [guard.fingerprint, middle.fingerprint, exit.fingerprint],
+                serverSpecs: [`$${guard.fingerprint}`, `$${middle.fingerprint}`, `$${exit.fingerprint}`],
                 purpose: "general",
                 awaitBuild: true
             });
 
-            console.log(`  ✓ Circuit ${circuitId} built successfully`);
+            // Track which target this circuit was built for
+            this.pendingCircuitTargets.set(circuitId, target.address);
+
+            console.log(`  ✓ Circuit ${circuitId} built successfully for ${target.address}`);
             return circuitId;
         } catch (error) {
             console.error(`  ✗ Circuit build failed:`, error);
@@ -213,6 +225,14 @@ class StateManager {
     }
 
     private async setupEventListeners() {
+        // ADDRMAP event listener - maps IP addresses to hostnames
+        const addrMapEventListener = (event: AddrMapEvent) => {
+            if (event.address && event.mappedAddress) {
+                // Store both directions: hostname -> IP and IP -> hostname
+                this.ipToHostname.set(event.mappedAddress, event.address);
+            }
+        };
+
         // Stream event listener
         const streamEventListener = async (event: StreamEvent) => {
             const streamId = event.streamId;
@@ -221,14 +241,34 @@ class StateManager {
             const circId = event.circId;
 
             if (circId !== 0 && this.circuits.has(circId) && event.status === 'SUCCEEDED') {
-                let country = this.circuits.get(circId)!.country;
-                console.log(`Stream Event: ID=${streamId} Target=${event.target} Circ=${circId} ( ${flagEmoji(country)} )`);
+                const circ = this.circuits.get(circId)!;
+                const country = circ.country;
+
+                // Resolve IP to hostname: check ipToHostname map, or use original target from stream entry
+                const targetParts = event.target.split(":");
+                const targetHost = targetParts[0];
+
+                // Try to get hostname from: 1) ADDRMAP cache, 2) original stream target, 3) current target
+                let displayName = this.ipToHostname.get(targetHost);
+                if (!displayName && se?.target) {
+                    displayName = se.target.split(":")[0];
+                }
+                if (!displayName) {
+                    displayName = targetHost;
+                }
+
+                // Only log once per site+circuit combination
+                const logKey = `${displayName}:${circId}`;
+                if (!this.loggedConnections.has(logKey)) {
+                    this.loggedConnections.add(logKey);
+                    console.log(`Stream: ${displayName} -> Circuit ${circId} ( ${flagEmoji(country)} )`);
+                }
             }
 
             if (!se) {
                 se = {
                     id: streamId,
-                    target: event.target,
+                    target: event.target,  // Keep original target (hostname from NEW event)
                     status: event.status,
                     circId: circId
                 };
@@ -236,7 +276,7 @@ class StateManager {
             } else {
                 se.status = event.status;
                 se.circId = circId;
-                se.target = event.target;
+                // Don't update target - preserve original hostname
             }
 
             if (se.status === 'CLOSED') {
@@ -280,15 +320,28 @@ class StateManager {
                             const exitRelay = await this.control.getRelayInfo(ce.path[ce.path.length - 1].fingerprint);
                             ce.country = await this.control.getCountry(exitRelay.ip);
 
-                            // Assign target based on country
-                            // ce.target = this.assignTargetToCircuit(ce);
+                            // Use tracked target if this circuit was built for a specific target
+                            // Otherwise, fall back to country-based assignment
+                            const trackedTarget = this.pendingCircuitTargets.get(circId);
+                            if (trackedTarget) {
+                                ce.target = trackedTarget;
+                                this.pendingCircuitTargets.delete(circId);  // Clean up
+                            } else {
+                                ce.target = this.assignTargetToCircuit(ce);
+                            }
 
-                            // if (ce.target) {
-                            //     console.log(`Circuit ${circId} BUILT: [${exitRelay.nickname} - ${exitRelay.ip} - ${ce.country}] -> assigned to ${ce.target}`);
-                            // }
+                            if (ce.target) {
+                                console.log(`Circuit ${circId} BUILT: [${exitRelay.nickname} - ${exitRelay.ip} - ${ce.country}] -> assigned to ${ce.target}`);
+                            }
                         } catch (error) {
                             console.warn(`Could not get country for circuit ${circId}:`, error instanceof Error ? error.message : error);
-                            // Circuit is still usable, just without country assignment
+                            // Still try to assign using tracked target even without country info
+                            const trackedTarget = this.pendingCircuitTargets.get(circId);
+                            if (trackedTarget) {
+                                ce.target = trackedTarget;
+                                this.pendingCircuitTargets.delete(circId);
+                                console.log(`Circuit ${circId} BUILT -> assigned to ${ce.target} (tracked)`);
+                            }
                         }
                     }
                 }
@@ -310,6 +363,7 @@ class StateManager {
             }
         };
 
+        await this.control.addEventListener(addrMapEventListener, EventType.ADDRMAP);
         await this.control.addEventListener(streamEventListener, EventType.STREAM);
         await this.control.addEventListener(circEventListener, EventType.CIRC);
     }
@@ -340,27 +394,34 @@ class StateManager {
 
         if (isManaged) {
             // Find circuits for this target
-            // const circuits = this.getCircuitsForTarget(target);
-            //
-            // if (circuits.length === 0) {
-            //     console.warn(`No circuits available for ${target}, using default`);
-            //     await this.control.attachStream(streamId, 0);
-            //     return;
-            // }
+            const circuits = this.getCircuitsForTarget(target);
+
+            if (circuits.length === 0) {
+                // Fallback: try any BUILT circuit
+                const builtCircuits = [...this.circuits.values()].filter(c => c.status === 'BUILT');
+                if (builtCircuits.length === 0) {
+                    console.warn(`No circuits available for ${target}, using default`);
+                    await this.control.attachStream(streamId, 0);
+                    return;
+                }
+                // Use random built circuit as fallback
+                const circuit = builtCircuits[randomInt(builtCircuits.length)];
+                const attached = await this.control.attachStream(streamId, circuit.id);
+                if (attached) {
+                    circuit.streamCount++;
+                }
+                return;
+            }
 
             // Select circuit with least streams (load balancing)
-            // const circuit = circuits.reduce((min, c) =>
-            //     c.streamCount < min.streamCount ? c : min
-            // );
-
-            // get random circuit for target
-            const circuit = [...this.circuits.values()][randomInt(this.circuits.size - 1)];
+            const circuit = circuits.reduce((min, c) =>
+                c.streamCount < min.streamCount ? c : min
+            );
 
             const attached = await this.control.attachStream(streamId, circuit.id);
 
             if (attached) {
                 circuit.streamCount++;
-                console.log(`Stream ${streamId} -> Circuit ${circuit.id} - ${target} -> ( ${flagEmoji(circuit.country)} ) [${circuit.streamCount} streams]`);
             } else {
                 console.warn(`Failed to attach stream ${streamId} to circuit ${circuit.id}`);
             }

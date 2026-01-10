@@ -38,9 +38,13 @@ export class CountryCacheManager {
     }
 
     private async loadCache(): Promise<void> {
+        console.log(`Loading cache from: ${this.cacheFilePath}`);
         try {
             const data = await fs.readFile(this.cacheFilePath, 'utf-8');
+            console.log(`Raw cache file size: ${data.length} bytes`);
             const loadedCache = JSON.parse(data) as CountryCache;
+            const totalLoaded = Object.keys(loadedCache).length;
+            console.log(`Parsed ${totalLoaded} entries from cache file`);
 
             // Filter out expired entries
             const now = Date.now();
@@ -50,15 +54,21 @@ export class CountryCacheManager {
                 }
             }
 
-            console.log(`Loaded ${Object.keys(this.cache).length} cached IP-to-country mappings`);
+            console.log(`Loaded ${Object.keys(this.cache).length}/${totalLoaded} cached IP-to-country mappings (${totalLoaded - Object.keys(this.cache).length} expired)`);
         } catch (error) {
             // Cache file doesn't exist or is corrupted, start fresh
-            console.log('No existing cache found, starting fresh');
+            console.log(`No existing cache found at ${this.cacheFilePath}, starting fresh:`, error instanceof Error ? error.message : error);
             this.cache = {};
         }
     }
 
     async saveCache(): Promise<void> {
+        const entryCount = Object.keys(this.cache).length;
+        // Log stack trace when saving with few entries to find the culprit
+        if (entryCount < 5) {
+            console.warn(`WARNING: Saving cache with only ${entryCount} entries! Stack trace:`);
+            console.warn(new Error().stack);
+        }
         try {
             await fs.writeFile(
                 this.cacheFilePath,
@@ -66,7 +76,7 @@ export class CountryCacheManager {
                 'utf-8'
             );
         } catch (error) {
-            console.warn('Failed to save country cache:', error);
+            console.warn(`Failed to save country cache to ${this.cacheFilePath}:`, error);
         }
     }
 
@@ -85,7 +95,10 @@ export class CountryCacheManager {
     }
 
     set(ip: string, country: string): void {
-        console.log("Caching country for IP", ip, "->", country);
+        let size = Object.keys(this.cache).length
+        if (size % 10 == 0) {
+            console.log("Cache size: " + size);
+        }
         this.cache[ip] = {
             country,
             timestamp: Date.now()
