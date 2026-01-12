@@ -28,6 +28,7 @@ export class Control {
     // Loop tasks
     private readerLoopTask: Promise<void> | null = null;
     private msgLoopTask: Promise<void> | null = null;
+    private isShuttingDown: boolean = false;
 
     // Circuit event handling
     private circuitEventListenerEnabled: boolean = false;
@@ -67,7 +68,12 @@ export class Control {
 
     async authenticate(password: string = 'password'): Promise<void> {
         await this.msgAsync(`AUTHENTICATE "${password}"`);
-        const response = await this.defaultQueue.pop();
+        const response = await Promise.race([
+            this.defaultQueue.pop(),
+            new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error('Timeout waiting for authentication response')), 10000)
+            )
+        ]);
 
         if (response.startsWith('250 OK')) {
             this.isAuthenticated = true;
@@ -102,7 +108,12 @@ export class Control {
     async setEvents(events: EventType[]): Promise<boolean> {
         const command = `SETEVENTS ${events.join(' ')}`;
         await this.msgAsync(command);
-        const response = await this.defaultQueue.pop();
+        const response = await Promise.race([
+            this.defaultQueue.pop(),
+            new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error(`Timeout waiting for SETEVENTS response`)), 10000)
+            )
+        ]);
 
         if (response.startsWith('250 OK')) {
             return true;
@@ -117,58 +128,63 @@ export class Control {
     async circuitStatus(): Promise<CircuitStatus[]> {
         await this.msgAsync('GETINFO circuit-status');
 
-        return await this.defaultQueue.pop().then(response => {
-            if (!response.startsWith('250+circuit-status=') && !response.startsWith('250 OK')) {
-                throw new Error('Invalid response format: ' + response);
+        const response = await Promise.race([
+            this.defaultQueue.pop(),
+            new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error('Timeout waiting for circuit-status response')), 10000)
+            )
+        ]);
+
+        if (!response.startsWith('250+circuit-status=') && !response.startsWith('250 OK')) {
+            throw new Error('Invalid response format: ' + response);
+        }
+
+        const cleanedResponse = response
+            .replace(/^250\+circuit-status=/, '')
+            .replace(/250 OK$/, '');
+
+        const circuits: CircuitStatus[] = [];
+        const lines = cleanedResponse.split('\n').filter(line => line.trim() !== '');
+
+        for (const line of lines) {
+            const trimmedLine = line.trim();
+            const parts = trimmedLine.split(' ');
+
+            if (parts.length < 4 || isNaN(parseInt(parts[0], 10))) {
+                continue;
             }
 
-            const cleanedResponse = response
-                .replace(/^250\+circuit-status=/, '')
-                .replace(/250 OK$/, '');
-
-            const circuits: CircuitStatus[] = [];
-            const lines = cleanedResponse.split('\n').filter(line => line.trim() !== '');
-
-            for (const line of lines) {
-                const trimmedLine = line.trim();
-                const parts = trimmedLine.split(' ');
-
-                if (parts.length < 4 || isNaN(parseInt(parts[0], 10))) {
-                    continue;
-                }
-
-                const state = parts[1];
-                const circuitId = parseInt(parts[0], 10);
-                const relaysPart = parts.find(part => part.startsWith('$'))?.split(',') || [];
-                const relays: Relay[] = relaysPart.map(relay => {
-                    const [fingerprint, nickname] = relay.split('~');
-                    return {
-                        fingerprint: fingerprint.replace(/^\$/, ''),
-                        nickname: nickname
-                    };
-                });
-
-                const buildFlags = parts.find(part => part.startsWith('BUILD_FLAGS='))
-                    ?.split('=')[1]?.split(',') || [];
-                const purpose = parts.find(part => part.startsWith('PURPOSE='))
-                    ?.split('=')[1] || '';
-                const timeCreated = new Date(parts.find(part => part.startsWith('TIME_CREATED='))
-                    ?.split('=')[1] + 'Z' || '');
-
-                const circuit: CircuitStatus = {
-                    circuitId,
-                    state,
-                    relays,
-                    buildFlags,
-                    purpose,
-                    timeCreated
+            const state = parts[1];
+            const circuitId = parseInt(parts[0], 10);
+            const relaysPart = parts.find(part => part.startsWith('$'))?.split(',') || [];
+            const relays: Relay[] = relaysPart.map(relay => {
+                const [fingerprint, nickname] = relay.split('~');
+                return {
+                    fingerprint: fingerprint.replace(/^\$/, ''),
+                    nickname: nickname
                 };
+            });
 
-                circuits.push(circuit);
-            }
+            const buildFlags = parts.find(part => part.startsWith('BUILD_FLAGS='))
+                ?.split('=')[1]?.split(',') || [];
+            const purpose = parts.find(part => part.startsWith('PURPOSE='))
+                ?.split('=')[1] || '';
+            const timeCreated = new Date(parts.find(part => part.startsWith('TIME_CREATED='))
+                ?.split('=')[1] + 'Z' || '');
 
-            return circuits;
-        });
+            const circuit: CircuitStatus = {
+                circuitId,
+                state,
+                relays,
+                buildFlags,
+                purpose,
+                timeCreated
+            };
+
+            circuits.push(circuit);
+        }
+
+        return circuits;
     }
 
     async getCircuit(circuitId: number): Promise<CircuitStatus> {
@@ -253,7 +269,12 @@ export class Control {
 
     async closeCircuit(circuitId: number): Promise<void> {
         await this.msgAsync(`CLOSECIRCUIT ${circuitId}`);
-        const response = await this.defaultQueue.pop();
+        const response = await Promise.race([
+            this.defaultQueue.pop(),
+            new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error('Timeout waiting for CLOSECIRCUIT response')), 10000)
+            )
+        ]);
 
         if (!response.startsWith('250')) {
             throw new Error(`Failed to close circuit: ${response}`);
@@ -272,7 +293,12 @@ export class Control {
         }
 
         await this.msgAsync(command);
-        const response = await this.defaultQueue.pop();
+        const response = await Promise.race([
+            this.defaultQueue.pop(),
+            new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error('Timeout waiting for ATTACHSTREAM response')), 10000)
+            )
+        ]);
 
         const { code, text } = parseFirstStatusCode(response);
 
@@ -346,7 +372,12 @@ export class Control {
         const command = commandParts.join(' ');
         await this.msgAsync(command);
 
-        const response = await this.defaultQueue.pop();
+        const response = await Promise.race([
+            this.defaultQueue.pop(),
+            new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error(`Timeout waiting for SETCONF response (command: ${command})`)), 10000)
+            )
+        ]);
 
         if (!response.startsWith('250 OK')) {
             throw new Error(`SETCONF/RESETCONF failed: ${response}`);
@@ -387,16 +418,47 @@ export class Control {
         return this.relayManager.filterRelaysByFlags(relays, ...flags);
     }
 
+    /**
+     * Pause background country resolution (use before operations that need exclusive control port access)
+     */
+    pauseBackgroundResolution(): void {
+        this.relayManager.pauseBackgroundResolution();
+    }
+
+    /**
+     * Resume background country resolution
+     */
+    resumeBackgroundResolution(): void {
+        this.relayManager.resumeBackgroundResolution();
+    }
+
+    /**
+     * Stop background country resolution completely (use on shutdown)
+     */
+    stopBackgroundResolution(): void {
+        this.relayManager.stopBackgroundResolution();
+    }
+
     async resolve(hostname: string): Promise<void> {
         await this.msgAsync(`RESOLVE ${hostname}`);
-        await this.defaultQueue.pop();
+        await Promise.race([
+            this.defaultQueue.pop(),
+            new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error('Timeout waiting for RESOLVE response')), 10000)
+            )
+        ]);
     }
 
     // ==================== Connection Management ====================
 
     end(): void {
-        this.client.write('QUIT\r\n');
-        this.client.end();
+        this.isShuttingDown = true;
+        try {
+            this.client.write('QUIT\r\n');
+            this.client.end();
+        } catch (e) {
+            // Ignore errors during shutdown
+        }
     }
 
     // ==================== Internal Message Handling ====================
@@ -417,17 +479,18 @@ export class Control {
         const pendingCountryRequests = this.relayManager.getPendingCountryRequests();
         const pendingNsRequests = this.relayManager.getPendingNsRequests();
 
-        while (true) {
+        while (this.client && !this.client.destroyed) {
             try {
                 let raw = await this.replyQueue.pop();
 
                 if (raw.startsWith('ControllerError:')) {
-                    const msg = raw.slice('ControllerError:'.length).trim() || 'ControllerError';
-                    if (!this.client || this.client.destroyed) {
-                        this.end?.();
-                        throw new Error('SocketClosed');
+                    if (!this.client || this.client.destroyed || this.isShuttingDown) {
+                        return;
                     }
-                    throw new Error(msg);
+                    const msg = raw.slice('ControllerError:'.length).trim() || 'ControllerError';
+                    console.error(`[AnonCtrl] Controller error: ${msg}`);
+                    // Continue processing instead of throwing
+                    continue;
                 }
 
                 if (raw.startsWith('ReplyError:')) {
@@ -439,6 +502,7 @@ export class Control {
                 }
 
                 // Route responses by correlation key
+
                 if (raw.startsWith("250 EXTENDED")) {
                     this.extendQueue.push(raw);
                 } else if (raw.startsWith("250-ip-to-country/")) {
@@ -471,11 +535,11 @@ export class Control {
                     this.defaultQueue.push(raw);
                 }
             } catch (err) {
-                if (!this.client || this.client.destroyed) {
-                    this.end?.();
-                    throw new Error('SocketClosed');
+                if (this.isShuttingDown || !this.client || this.client.destroyed) {
+                    return;
                 }
-                throw err;
+                console.error('[AnonCtrl] Error in msgLoop:', err);
+                // Continue processing instead of crashing
             }
         }
     }
@@ -493,7 +557,7 @@ export class Control {
     }
 
     private async readerLoop(): Promise<void> {
-        while (this.client && !this.client.destroyed) {
+        while (this.client && !this.client.destroyed && !this.isShuttingDown) {
             try {
                 const raw = await this.parser.readReply(this.client, 0);
 
@@ -505,6 +569,9 @@ export class Control {
                     this.replyQueue.push(raw);
                 }
             } catch (err: any) {
+                if (this.isShuttingDown) {
+                    return;
+                }
                 const msg = err instanceof Error ? err.message : String(err);
                 this.replyQueue.push(`ControllerError: ${msg}`);
             }

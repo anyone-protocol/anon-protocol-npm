@@ -42,7 +42,7 @@ class VPNExample {
     private _exitResolver?: () => void;
 
     constructor() {
-        this.anon = new Process({ displayLog: true, socksPort: 9050, controlPort: 9051 });
+        this.anon = new Process({ displayLog: false, socksPort: 9050, controlPort: 9051 });
         process.on('SIGINT', () => this.shutdown());
         process.on('SIGTERM', () => this.shutdown());
     }
@@ -72,6 +72,8 @@ class VPNExample {
 
             // Initialize VPNManager
             console.log('\n=== Initializing VPNManager ===');
+
+            // Background resolution is paused by default - we'll resume after init
             this.vpnManager = new VPNManager(this.stateManager, {
                 targets: VPN_TARGETS,
                 healthMonitorInterval: 30000, // 30 seconds
@@ -82,10 +84,12 @@ class VPNExample {
 
             await this.vpnManager.initialize();
 
-            // Wait a moment for circuits to start building, then print metrics
+            // Resume background resolution
+            this.stateManager.resumeBackgroundResolution();
+
+            // Wait a moment for circuits to start building
             console.log('\nWaiting for circuits to build...');
             await this.delay(5000);
-            this.printMetrics();
 
             console.log('\n=== VPN Example Running ===');
             console.log('Press Ctrl+C to quit.');
@@ -106,33 +110,17 @@ class VPNExample {
 
 
     private setupVPNManagerListeners() {
-        this.vpnManager.on(VPNManagerEvent.TARGET_READY, (info) => {
-            console.log(`[VPN] Target ${info.target} ready: circuit ${info.circuitId} (${info.country})`);
-        });
-
-        this.vpnManager.on(VPNManagerEvent.TARGET_DEGRADED, (info) => {
-            console.log(`[VPN] Target ${info.target} DEGRADED: ${info.currentCircuits}/${info.minCircuits} circuits`);
-        });
-
-        this.vpnManager.on(VPNManagerEvent.STREAM_ROUTED, (info) => {
-            console.log(`[VPN] Routed ${info.target} -> circuit ${info.circuitId}`);
-        });
-    }
-
-    private printMetrics() {
-        const metrics = this.vpnManager.getMetrics();
-        console.log('\n=== VPN Metrics ===');
-        console.log(`Total circuits: ${metrics.totalCircuits}`);
-        console.log(`Total streams: ${metrics.totalStreams}`);
-        console.log('Circuits by target:');
-        for (const [target, count] of Object.entries(metrics.circuitsByTarget)) {
-            console.log(`  ${target}: ${count}`);
-        }
-        console.log('Circuits by status:');
-        for (const [status, count] of Object.entries(metrics.circuitsByStatus)) {
-            console.log(`  ${status}: ${count}`);
-        }
-        console.log('');
+        // this.vpnManager.on(VPNManagerEvent.TARGET_READY, (info) => {
+        //     console.log(`[VPN] Target ${info.target} ready: circuit ${info.circuitId} (${info.country})`);
+        // });
+        //
+        // this.vpnManager.on(VPNManagerEvent.TARGET_DEGRADED, (info) => {
+        //     console.log(`[VPN] Target ${info.target} DEGRADED: ${info.currentCircuits}/${info.minCircuits} circuits`);
+        // });
+        //
+        // this.vpnManager.on(VPNManagerEvent.STREAM_ROUTED, (info) => {
+        //     console.log(`[VPN] Routed ${info.target} -> circuit ${info.circuitId}`);
+        // });
     }
 
     private delay(ms: number): Promise<void> {
@@ -145,40 +133,35 @@ class VPNExample {
 
         console.log('\n=== Shutting down ===');
 
-        // Print final metrics
-        if (this.vpnManager) {
-            this.printMetrics();
-        }
-
-        // Shutdown VPNManager
-        if (this.vpnManager) {
-            await this.vpnManager.shutdown();
-            console.log('VPNManager shutdown');
-        }
-
-        // Shutdown StateManager
+        // Stop background resolution first
         if (this.stateManager) {
-            await this.stateManager.shutdown();
-            console.log('StateManager shutdown');
+            this.stateManager.stopBackgroundResolution();
         }
 
-        // Close control connection
+        // Close control connection first to prevent timeout errors during cleanup
         if (this.control) {
-            this.control.end();
-            console.log('Control connection closed');
+            try {
+                this.control.end();
+            } catch (e) {
+                // Ignore errors during shutdown
+            }
         }
 
         // Stop Anon process
         try {
             await this.anon.stop();
-            console.log('Anon process stopped');
         } catch (e) {
-            console.warn('Error stopping Anon:', e);
+            // Ignore errors during shutdown
         }
+
+        console.log('Shutdown complete');
 
         if (this._exitResolver) {
             this._exitResolver();
         }
+
+        // Force exit after a short delay to ensure clean exit
+        setTimeout(() => process.exit(0), 100);
     }
 }
 

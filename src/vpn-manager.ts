@@ -42,6 +42,7 @@ export class VPNManager extends EventEmitter {
 
     // Stream tracking
     private streams: Map<number, { id: number; target?: string; status?: string; circId?: number }> = new Map();
+    private loggedStreams: Set<number> = new Set(); // Track host+circuit combos we've already logged
 
     // IP to hostname mapping
     private ipToHostname: Map<string, string> = new Map();
@@ -82,6 +83,7 @@ export class VPNManager extends EventEmitter {
         const control = this.stateManager.getControl();
 
         // Disable automatic stream attachment - we handle it
+        console.log(chalk.gray('  Disabling stream auto-attachment...'));
         await control.disableStreamAttachment();
         console.log(chalk.gray('  ✓ Stream auto-attachment disabled'));
 
@@ -266,15 +268,22 @@ export class VPNManager extends EventEmitter {
         let stream = this.streams.get(streamId);
         const circId = event.circId;
 
-        // Log successful connections
-        if (circId !== 0 && this.circuits.has(circId) && event.status === 'SUCCEEDED') {
+        // Log successful connections (only once per stream)
+        if (circId !== 0 && this.circuits.has(circId) && event.status === 'SUCCEEDED' && !this.loggedStreams.has(streamId)) {
+            this.loggedStreams.add(streamId);
             const circ = this.circuits.get(circId)!;
             const targetParts = event.target.split(':');
             const targetHost = targetParts[0];
             let displayName = this.ipToHostname.get(targetHost) || stream?.target?.split(':')[0] || targetHost;
             const flag = countryFlag(circ.country);
 
-            console.log(chalk.blue(`↔ ${chalk.bold(displayName)}`) + chalk.gray(` → circuit ${circId} ${flag}`));
+            // Check if this is a VPN config target (highlight in green) or other traffic (gray)
+            const isVpnTarget = this.targets.some(t => t.address === displayName);
+            if (isVpnTarget) {
+                console.log(chalk.green(`↔ ${chalk.bold(displayName)}`) + chalk.white(` → circuit ${circId} ${flag}`));
+            } else {
+                console.log(chalk.gray(`  ${displayName} → circuit ${circId} ${flag}`));
+            }
         }
 
         if (!stream) {
@@ -299,6 +308,7 @@ export class VPNManager extends EventEmitter {
                 }
             }
             this.streams.delete(streamId);
+            this.loggedStreams.delete(streamId);
         }
 
         // Attach stream if needed
@@ -321,22 +331,23 @@ export class VPNManager extends EventEmitter {
 
         if (vpnTarget) {
             // Find circuits for this target
-            const circuits = this.getCircuitsForTarget(target);
+            let circuits = this.getCircuitsForTarget(target);
 
             if (circuits.length === 0) {
-                // Fallback: try any BUILT circuit
-                const builtCircuits = [...this.circuits.values()].filter(c => c.status === 'BUILT');
-                if (builtCircuits.length === 0) {
-                    console.warn(chalk.yellow(`⚠ No circuits for ${target}, using default`));
+                // Fallback: try any BUILT circuit with matching exit country
+                const matchingCircuits = [...this.circuits.values()].filter(c =>
+                    c.status === 'BUILT' &&
+                    c.country &&
+                    vpnTarget.exitCountries.includes(c.country.toLowerCase())
+                );
+
+                if (matchingCircuits.length === 0) {
+                    console.warn(chalk.yellow(`⚠ No circuits for ${target} (need ${vpnTarget.exitCountries.join('/')}), using default routing`));
                     await control.attachStream(streamId, 0);
                     return;
                 }
-                const circuit = builtCircuits[randomInt(builtCircuits.length)];
-                const attached = await control.attachStream(streamId, circuit.id);
-                if (attached) {
-                    circuit.streamCount++;
-                }
-                return;
+
+                circuits = matchingCircuits;
             }
 
             // Load balancing: select circuit with fewest streams

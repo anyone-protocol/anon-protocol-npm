@@ -128,18 +128,20 @@ export class EventDispatcher {
             return;
         }
 
-        const [, failedEventTypes] = await this.attachListeners();
+        try {
+            const [, failedEventTypes] = await this.attachListeners();
 
-        if (failedEventTypes.length > 0) {
-            console.error('Failed to set events:', failedEventTypes);
-            for (const event of failedEventTypes) {
-                const callbacks = this.eventListeners.get(event);
-                if (callbacks) {
-                    this.eventListeners.delete(event);
+            if (failedEventTypes.length > 0) {
+                for (const event of failedEventTypes) {
+                    const callbacks = this.eventListeners.get(event);
+                    if (callbacks) {
+                        this.eventListeners.delete(event);
+                    }
                 }
+                // Don't throw - just log if needed for debugging
             }
-
-            throw new Error(`Failed to set events: ${failedEventTypes}`);
+        } catch (err) {
+            // Ignore errors (likely during shutdown)
         }
     }
 

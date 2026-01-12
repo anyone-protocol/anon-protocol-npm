@@ -338,6 +338,30 @@ export class StateManager extends EventEmitter {
         return this.control;
     }
 
+    /**
+     * Pause background country resolution
+     * Call this before VPNManager.initialize() to prevent race conditions
+     */
+    pauseBackgroundResolution(): void {
+        this.control.pauseBackgroundResolution();
+    }
+
+    /**
+     * Resume background country resolution
+     * Call this after VPNManager.initialize() completes
+     */
+    resumeBackgroundResolution(): void {
+        this.control.resumeBackgroundResolution();
+    }
+
+    /**
+     * Stop background country resolution completely
+     * Call this during shutdown
+     */
+    stopBackgroundResolution(): void {
+        this.control.stopBackgroundResolution();
+    }
+
     // ==================== Internal Event Handling ====================
 
     private async setupEventListeners(): Promise<void> {

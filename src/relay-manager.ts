@@ -53,7 +53,12 @@ export class RelayManager {
     async getRelays(): Promise<RelayInfo[]> {
         await this.msgAsync('GETINFO ns/all');
 
-        const response = await this.defaultQueue.pop();
+        const response = await Promise.race([
+            this.defaultQueue.pop(),
+            new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error('Timeout waiting for relay list response')), 30000)
+            )
+        ]);
 
         if (!response.startsWith('250+ns/all=')) {
             throw new Error('Invalid response format: ' + response);
@@ -230,8 +235,6 @@ export class RelayManager {
             .map(relay => relay.ip);
 
         if (uncachedIps.length > 0) {
-            console.log(`Queueing ${uncachedIps.length} IPs for background country resolution`);
-
             const resolver = async (ip: string) => {
                 return await this.getCountry(ip);
             };
@@ -389,5 +392,32 @@ export class RelayManager {
 
     private isValidFingerprint(hex: string): boolean {
         return /^[A-F0-9]{40}$/.test(hex);
+    }
+
+    /**
+     * Pause background country resolution
+     */
+    pauseBackgroundResolution(): void {
+        if (this.countryCache) {
+            this.countryCache.pause();
+        }
+    }
+
+    /**
+     * Resume background country resolution
+     */
+    resumeBackgroundResolution(): void {
+        if (this.countryCache) {
+            this.countryCache.resume();
+        }
+    }
+
+    /**
+     * Stop background country resolution completely (use on shutdown)
+     */
+    stopBackgroundResolution(): void {
+        if (this.countryCache) {
+            this.countryCache.stop();
+        }
     }
 }

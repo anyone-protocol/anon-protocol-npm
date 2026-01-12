@@ -184,7 +184,7 @@ class StateManager {
             console.log(`  ✓ Circuit ${circuitId} built successfully for ${target.address}`);
             return circuitId;
         } catch (error) {
-            console.error(`  ✗ Circuit build failed:`, error);
+            console.warn(`  ✗ Circuit build failed:`, error);
             return null;
         }
     }

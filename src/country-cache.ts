@@ -16,7 +16,9 @@ export class CountryCacheManager {
     private pendingResolves: Map<string, Promise<string | undefined>> = new Map();
     private resolveQueue: string[] = [];
     private isResolving = false;
-    private resolveInterval = 10000; // 10 seconds between requests
+    private isPaused = true; // Start paused by default - caller must resume
+    private isStopped = false;
+    private resolveInterval = 5000; // 5 seconds between requests
 
     constructor(cacheFileName: string = 'ip-country-cache.json') {
         const cacheDir = path.join(os.homedir(), '.anon-cache');
@@ -95,10 +97,6 @@ export class CountryCacheManager {
     }
 
     set(ip: string, country: string): void {
-        let size = Object.keys(this.cache).length
-        if (size % 10 == 0) {
-            console.log("Cache size: " + size);
-        }
         this.cache[ip] = {
             country,
             timestamp: Date.now()
@@ -154,30 +152,66 @@ export class CountryCacheManager {
         return promise;
     }
 
+    /**
+     * Pause background resolution (use before operations that need exclusive control port access)
+     */
+    pause(): void {
+        this.isPaused = true;
+    }
+
+    /**
+     * Resume background resolution
+     */
+    resume(): void {
+        this.isPaused = false;
+    }
+
+    /**
+     * Stop background resolution completely (use on shutdown)
+     */
+    stop(): void {
+        this.isStopped = true;
+        this.isPaused = false; // Unpause so the loop can exit
+        this.resolveQueue = []; // Clear queue
+        this.pendingResolves.clear();
+    }
+
     private async startBackgroundResolve(resolver: (ip: string) => Promise<string>): Promise<void> {
         if (this.isResolving) return;
         this.isResolving = true;
 
         console.log(`Starting background country resolution for ${this.resolveQueue.length} IPs (rate: 1 per ${this.resolveInterval}ms)`);
 
-        while (this.resolveQueue.length > 0) {
-            const ip = this.resolveQueue.shift()!;
+        while (this.resolveQueue.length > 0 && !this.isStopped) {
+            // Wait while paused (but exit if stopped)
+            while (this.isPaused && !this.isStopped) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            if (this.isStopped) break;
+
+            const ip = this.resolveQueue.shift()!
 
             try {
                 const country = await resolver(ip);
                 this.set(ip, country);
                 await this.saveCache();
             } catch (error) {
-                console.warn(`Failed to resolve country for ${ip}:`, error);
+                // Only log if not stopped (avoid noise during shutdown)
+                if (!this.isStopped) {
+                    console.warn(`Failed to resolve country for ${ip}:`, error);
+                }
             }
 
             // Rate limit: wait before next request
-            if (this.resolveQueue.length > 0) {
+            if (this.resolveQueue.length > 0 && !this.isStopped) {
                 await new Promise(resolve => setTimeout(resolve, this.resolveInterval));
             }
         }
 
-        console.log('Background country resolution complete');
+        if (!this.isStopped) {
+            console.log('Background country resolution complete');
+        }
         this.isResolving = false;
         this.pendingResolves.clear();
     }
