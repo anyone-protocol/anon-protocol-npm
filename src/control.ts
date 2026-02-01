@@ -303,12 +303,9 @@ export class Control {
         const { code, text } = parseFirstStatusCode(response);
 
         if (!Number.isNaN(code)) {
-            if (code === 552) {
-                console.warn(`[AnonCtrl] ATTACHSTREAM ${streamId} -> 552 Unknown stream; ignoring`);
-                return false;
-            }
-            if (code === 555) {
-                console.warn(`[AnonCtrl] ATTACHSTREAM ${streamId} -> 555 Connection not managed; ignoring`);
+            if (code === 552 || code === 555) {
+                // 552 = unknown stream (already closed), 555 = not managed by controller (internal stream)
+                // Both are expected during normal operation; caller decides whether to log
                 return false;
             }
             if (!isOkCode(code)) {
@@ -496,7 +493,7 @@ export class Control {
                 if (raw.startsWith('ReplyError:')) {
                     const idx = raw.indexOf(CRLF);
                     if (idx >= 0) {
-                        console.warn(`[AnonCtrl] ReplyError received: ${raw.slice(0, idx)}`);
+                        // Strip the ReplyError prefix; calling code handles specific errors
                         raw = raw.slice(idx + CRLF.length);
                     }
                 }

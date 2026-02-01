@@ -33,14 +33,15 @@ const archMap: { [name: string]: string } = {
   'x64': 'amd64',
 };
 
+// todo - replace web3yurii github url with anyone main branch
 const geoipFiles = [
   {
     name: 'geoip',
-    url: 'https://raw.githubusercontent.com/anyone-protocol/ator-protocol/refs/heads/main/src/config/geoip',
+    url: 'https://raw.githubusercontent.com/web3yurii/ator-protocol/refs/heads/feature/vpn/src/config/geoip',
   },
   {
     name: 'geoip6',
-    url: 'https://raw.githubusercontent.com/anyone-protocol/ator-protocol/refs/heads/main/src/config/geoip6',
+    url: 'https://raw.githubusercontent.com/web3yurii/ator-protocol/refs/heads/feature/vpn/src/config/geoip6',
   },
 ];
 

@@ -260,7 +260,7 @@ export class RelayManager {
                     result.push(relay);
                 }
             } catch (err) {
-                console.warn(`Failed to get country for ${relay.ip}:`, err);
+                // Skip relay, country resolution timed out
             }
         }
 
@@ -281,7 +281,7 @@ export class RelayManager {
                     result.push(relay);
                 }
             } catch (err) {
-                console.warn(`Failed to get country for ${relay.ip}:`, err);
+                // Skip relay, country resolution timed out
             }
         }
 
@@ -302,7 +302,7 @@ export class RelayManager {
                     result.push(relay);
                 }
             } catch (err) {
-                console.warn(`Failed to get country for ${relay.ip}:`, err);
+                // Skip relay, country resolution timed out
             }
         }
 

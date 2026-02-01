@@ -226,6 +226,8 @@ export interface VPNTarget {
     minCircuits: number;
     /** Maximum number of circuits to build for this target */
     maxCircuits: number;
+    /** Number of hops in the circuit (2 = guard+exit, 3 = guard+middle+exit). Defaults to 3. */
+    hopCount?: 2 | 3;
 }
 
 /**
@@ -236,6 +238,10 @@ export interface VPNManagerConfig {
     targets: VPNTarget[];
     /** Health monitor interval in milliseconds (default: 10000, 0 to disable) */
     healthMonitorInterval?: number;
+    /** Disable Anon's predicted (preemptive) circuit building (default: false) */
+    disablePredictedCircuits?: boolean;
+    /** Disable conflux (multi-path) circuits (default: false) */
+    disableConflux?: boolean;
 }
 
 /**

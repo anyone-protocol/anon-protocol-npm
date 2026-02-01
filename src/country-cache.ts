@@ -196,11 +196,8 @@ export class CountryCacheManager {
                 const country = await resolver(ip);
                 this.set(ip, country);
                 await this.saveCache();
-            } catch (error) {
-                // Only log if not stopped (avoid noise during shutdown)
-                if (!this.isStopped) {
-                    console.warn(`Failed to resolve country for ${ip}:`, error);
-                }
+            } catch {
+                // Skip failed resolutions silently, will retry on next pass
             }
 
             // Rate limit: wait before next request

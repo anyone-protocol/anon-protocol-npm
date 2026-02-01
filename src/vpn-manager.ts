@@ -65,6 +65,8 @@ export class VPNManager extends EventEmitter {
         this.config = {
             targets: config.targets,
             healthMonitorInterval: config.healthMonitorInterval ?? 10000,
+            disablePredictedCircuits: config.disablePredictedCircuits ?? false,
+            disableConflux: config.disableConflux ?? false,
         };
         this.targets = [...config.targets];
     }
@@ -86,6 +88,22 @@ export class VPNManager extends EventEmitter {
         console.log(chalk.gray('  Disabling stream auto-attachment...'));
         await control.disableStreamAttachment();
         console.log(chalk.gray('  ✓ Stream auto-attachment disabled'));
+
+        // Optionally disable Anon's own circuit building
+        if (this.config.disablePredictedCircuits) {
+            console.log(chalk.gray('  Disabling predicted circuits...'));
+            await control.disablePredictedCircuits();
+            console.log(chalk.gray('  ✓ Predicted circuits disabled'));
+        }
+
+        if (this.config.disableConflux) {
+            try {
+                await control.setConf('ConfluxEnabled', '0');
+                console.log(chalk.gray('  ✓ Conflux disabled'));
+            } catch {
+                // ConfluxEnabled may not be supported in this version
+            }
+        }
 
         // Set up event listeners DIRECTLY on Control (like working example)
         await this.setupEventListeners();
@@ -111,6 +129,19 @@ export class VPNManager extends EventEmitter {
         this.stopHealthMonitor();
 
         const control = this.stateManager.getControl();
+
+        // Restore settings changed during init
+        try {
+            if (this.config.disablePredictedCircuits) {
+                await control.enablePredictedCircuits();
+            }
+            if (this.config.disableConflux) {
+                await control.setConf('ConfluxEnabled', '1');
+            }
+            await control.enableStreamAttachment();
+        } catch {
+            // Ignore errors during shutdown
+        }
 
         // Remove event listeners
         if (this.circEventHandler) {
@@ -200,9 +231,6 @@ export class VPNManager extends EventEmitter {
                 this.ensureCircuitsForTarget(closedCircuit.target);
             }
 
-            if (event.status === 'FAILED') {
-                console.log(chalk.red(`✗ Circuit ${circId} failed: ${event.reason || 'unknown'}`));
-            }
         }
     }
 
@@ -224,41 +252,21 @@ export class VPNManager extends EventEmitter {
 
         const flag = countryFlag(circuit.country);
 
-        // Check if this circuit was built for a specific target
+        // Only use circuits explicitly built by VPNManager (via pendingCircuitTargets)
+        // Ignore Anon's own circuits (Conflux_linked, preemptive, etc.) to ensure correct hop count
         const trackedTarget = this.pendingCircuitTargets.get(circuit.id);
         if (trackedTarget) {
             circuit.target = trackedTarget;
             this.pendingCircuitTargets.delete(circuit.id);
-            console.log(chalk.green(`✓ Circuit ${chalk.bold(circuit.id)} ready`) + ` ${flag} → ${chalk.cyan(trackedTarget)}`);
+            const hopCount = circuit.path?.length ?? '?';
+            console.log(chalk.green(`✓ Circuit ${chalk.bold(circuit.id)} ready (${hopCount}-hop)`) + ` ${flag} → ${chalk.cyan(trackedTarget)}`);
 
             this.emit(VPNManagerEvent.TARGET_READY, {
                 target: trackedTarget,
                 circuitId: circuit.id,
                 country: circuit.country,
             });
-        } else {
-            // Try to assign based on country
-            const assignedTarget = this.assignTargetToCircuit(circuit);
-            if (assignedTarget) {
-                circuit.target = assignedTarget;
-                console.log(chalk.green(`✓ Circuit ${chalk.bold(circuit.id)} assigned`) + ` ${flag} → ${chalk.cyan(assignedTarget)}`);
-            }
         }
-    }
-
-    private assignTargetToCircuit(circuit: CircuitEntry): string | undefined {
-        if (!circuit.country) return undefined;
-
-        for (const target of this.targets) {
-            if (target.exitCountries.includes(circuit.country.toLowerCase())) {
-                const existingCircuits = this.getCircuitsForTarget(target.address);
-                if (existingCircuits.length < target.maxCircuits) {
-                    return target.address;
-                }
-            }
-        }
-
-        return undefined;
     }
 
     // ==================== Stream Event Handling ====================
@@ -363,9 +371,11 @@ export class VPNManager extends EventEmitter {
                     circuitId: circuit.id,
                     target: vpnTarget.address,
                 });
+            } else {
+                console.warn(chalk.yellow(`⚠ Failed to attach stream ${streamId} to circuit ${circuit.id} for ${vpnTarget.address}`));
             }
         } else {
-            // Not a managed target, use default attachment
+            // Not a managed target, use default attachment (555 errors are expected for internal streams)
             await control.attachStream(streamId, 0);
         }
     }
@@ -377,7 +387,8 @@ export class VPNManager extends EventEmitter {
 
         for (const target of this.targets) {
             const flags = target.exitCountries.map(c => countryFlag(c)).join(' ');
-            console.log(chalk.gray(`  ${target.address} → ${flags} (${target.minCircuits} circuit${target.minCircuits > 1 ? 's' : ''})`));
+            const hops = target.hopCount ?? 3;
+            console.log(chalk.gray(`  ${target.address} → ${flags} (${target.minCircuits} circuit${target.minCircuits > 1 ? 's' : ''}, ${hops}-hop)`));
             for (let i = 0; i < target.minCircuits; i++) {
                 try {
                     await this.buildCircuitForTarget(target);
@@ -396,20 +407,21 @@ export class VPNManager extends EventEmitter {
             return null;
         }
 
-        const [guard, middle, exit] = relays;
+        const hopCount = target.hopCount ?? 3;
+        const serverSpecs = relays.map(r => `$${r.fingerprint}`);
         const control = this.stateManager.getControl();
 
         try {
             const circuitId = await control.extendCircuit({
                 circuitId: 0,
-                serverSpecs: [`$${guard.fingerprint}`, `$${middle.fingerprint}`, `$${exit.fingerprint}`],
+                serverSpecs,
                 purpose: 'general',
                 awaitBuild: false,
             });
 
             // Track which target this circuit is for
             this.pendingCircuitTargets.set(circuitId, target.address);
-            console.log(chalk.gray(`  ⏳ Circuit ${circuitId} building for ${target.address}...`));
+            console.log(chalk.gray(`  ⏳ Circuit ${circuitId} (${hopCount}-hop) building for ${target.address}...`));
 
             return circuitId;
         } catch (error) {
@@ -418,7 +430,9 @@ export class VPNManager extends EventEmitter {
         }
     }
 
-    private selectRelaysForTarget(target: VPNTarget): [RelayInfo, RelayInfo, RelayInfo] | null {
+    private selectRelaysForTarget(target: VPNTarget): RelayInfo[] | null {
+        const hopCount = target.hopCount ?? 3;
+
         const possibleExits: RelayInfo[] = [];
         for (const country of target.exitCountries) {
             const exits = this.stateManager.getExitsByCountry(country);
@@ -426,15 +440,33 @@ export class VPNManager extends EventEmitter {
         }
 
         const guards = this.stateManager.getGuards();
-        const allRelays = this.stateManager.getRelays();
 
+        if (possibleExits.length === 0 || guards.length === 0) {
+            return null;
+        }
+
+        if (hopCount === 2) {
+            const maxAttempts = 10;
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                const guard = guards[randomInt(guards.length)];
+                const exit = possibleExits[randomInt(possibleExits.length)];
+
+                if (guard.fingerprint !== exit.fingerprint) {
+                    return [guard, exit];
+                }
+            }
+            return null;
+        }
+
+        // 3-hop: guard + middle + exit
+        const allRelays = this.stateManager.getRelays();
         const middleRelays = allRelays.filter(relay =>
             relay.flags.includes(Flag.Running) &&
             relay.flags.includes(Flag.Stable) &&
             !relay.flags.includes(Flag.BadExit)
         );
 
-        if (possibleExits.length === 0 || guards.length === 0 || middleRelays.length === 0) {
+        if (middleRelays.length === 0) {
             return null;
         }
 
@@ -511,7 +543,6 @@ export class VPNManager extends EventEmitter {
         const needed = target.minCircuits - circuits.length;
 
         if (needed > 0) {
-            console.log(chalk.yellow(`⚠ ${targetAddress} needs ${needed} more circuit(s)`));
             for (let i = 0; i < needed; i++) {
                 try {
                     await this.buildCircuitForTarget(target);
