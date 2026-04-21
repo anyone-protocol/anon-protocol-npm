@@ -72,7 +72,7 @@ async function main() {
                 const targetAddress = event.target.split(':')[0];
                 const circuitId = routingMap[targetAddress];
 
-                if (circuitId && (event.circId === '0' || event.circId === undefined)) {
+                if (circuitId && (event.circId === 0 || event.circId === undefined)) {
                     await control.attachStream(event.streamId, circuitId);
                 }
             }

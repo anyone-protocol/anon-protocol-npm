@@ -78,7 +78,7 @@ class AnonRunner {
                     const targetAddress = event.target.split(':')[0];
                     const circuitId = this.routingMap[targetAddress];
 
-                    if (circuitId && (event.circId === '0' || event.circId === undefined)) {
+                    if (circuitId && (event.circId === 0 || event.circId === undefined)) {
                         await this.control.attachStream(event.streamId, circuitId);
                     }
                 }

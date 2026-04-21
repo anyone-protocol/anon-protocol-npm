@@ -61,7 +61,9 @@ export async function createAnonConfigFile(options: Config): Promise<string> {
   const tempDataDirName = `anon-data-${Date.now()}`;
   const tempDataDirPath = path.join(os.tmpdir(), tempDataDirName);
 
-  const binaryDir = getBinaryDir();
+  const binaryDir = options.binaryPath
+      ? path.dirname(options.binaryPath)
+      : getBinaryDir();
 
   const configItems = [
     `DataDirectory ${tempDataDirPath}`,
