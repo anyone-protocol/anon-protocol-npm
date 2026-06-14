@@ -6,6 +6,10 @@ import chalk from 'chalk';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { AnonRunningError } from './errorTypes';
+import fs from 'fs/promises';
+import path from 'path';
+import axios from 'axios';
+import { SocksProxyAgent } from 'socks-proxy-agent';
 
 const execAsync = promisify(exec);
 
@@ -33,6 +37,7 @@ export class Process extends EventEmitter {
     termsFilePath: undefined,
   };
   private process?: ChildProcess;
+  private dataDir?: string;
 
   public constructor(options?: Partial<Config>) {
     super();
@@ -59,13 +64,23 @@ export class Process extends EventEmitter {
 
   /**
    * Retrieves the OR (Onion Routing) port number configured for the Anon instance.
-   * 
+   *
    * @returns {number} The OR port number.
    */
   public getORPort(): number {
     return this.options.orPort;
   }
-  
+
+  /**
+   * Retrieves the DataDirectory path used by this Anon instance.
+   * Only available after start() has been called.
+   *
+   * @returns {string | undefined} The DataDirectory path, or undefined if not started.
+   */
+  public getDataDirectory(): string | undefined {
+    return this.dataDir;
+  }
+
   /**
    * Starts Anon client with options configured in constructor
    * 
@@ -77,8 +92,9 @@ export class Process extends EventEmitter {
     }
 
     this.emit('start', { timestamp: new Date() });
-  
-    const configPath = await createAnonConfigFile(this.options);
+
+    const { configPath, dataDir } = await createAnonConfigFile(this.options);
+    this.dataDir = dataDir;
     const binaryPath = this.options.binaryPath ?? getBinaryPath('anon');
     const isRunning = await Process.isAnonProcessRunning();
     if (isRunning) {
@@ -132,7 +148,19 @@ export class Process extends EventEmitter {
       clearTimeout(timeoutId);
       this.emit('bootstrap-complete', { timestamp: new Date() });
       resolve();
+      this.downloadAnyoneHosts().catch(() => {});
     }
+  }
+
+  private async downloadAnyoneHosts(): Promise<void> {
+    if (!this.dataDir) return;
+    const agent = new SocksProxyAgent(`socks5://127.0.0.1:${this.options.socksPort}`);
+    const response = await axios.get<string>(
+      'http://dns-live-1.anyone.anyone/tld/anyone',
+      { httpAgent: agent, responseType: 'text', timeout: 30000 }
+    );
+    const hostsPath = path.join(this.dataDir, 'anyone_hosts');
+    await fs.writeFile(hostsPath, response.data);
   }
 
   private getBootstrapStatus(percentage: number): string {

@@ -65,12 +65,6 @@ export class CountryCacheManager {
     }
 
     async saveCache(): Promise<void> {
-        const entryCount = Object.keys(this.cache).length;
-        // Log stack trace when saving with few entries to find the culprit
-        if (entryCount < 5) {
-            console.warn(`WARNING: Saving cache with only ${entryCount} entries! Stack trace:`);
-            console.warn(new Error().stack);
-        }
         try {
             await fs.writeFile(
                 this.cacheFilePath,

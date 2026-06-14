@@ -32,6 +32,14 @@ export interface Config {
 
   /* Custom path for the terms agreement file */
   termsFilePath?: string;
+
+  /* Custom path for the data directory (default: auto-generated temp dir) */
+  dataDir?: string;
+}
+
+export interface AnonConfigResult {
+  configPath: string;
+  dataDir: string;
 }
 
 async function askForAgreement() {
@@ -48,18 +56,18 @@ async function askForAgreement() {
   });
 }
 
-export async function createAnonConfigFile(options: Config): Promise<string> {
+export async function createAnonConfigFile(options: Config): Promise<AnonConfigResult> {
   if (options.configFile) {
     try {
       await fs.access(options.configFile);
-      return options.configFile;
+      const dataDir = options.dataDir ?? path.dirname(options.configFile);
+      return { configPath: options.configFile, dataDir };
     } catch {
     }
   }
 
   const configPath = options.configFile ?? path.join(os.tmpdir(), `anonrc-${Date.now()}`);
-  const tempDataDirName = `anon-data-${Date.now()}`;
-  const tempDataDirPath = path.join(os.tmpdir(), tempDataDirName);
+  const tempDataDirPath = options.dataDir ?? path.join(os.tmpdir(), `anon-data-${Date.now()}`);
 
   const binaryDir = options.binaryPath
       ? path.dirname(options.binaryPath)
@@ -72,6 +80,9 @@ export async function createAnonConfigFile(options: Config): Promise<string> {
     `ControlPort ${options.controlPort}`,
     `GeoIPFile ${path.join(binaryDir, 'geoip')}`,
     `GeoIPv6File ${path.join(binaryDir, 'geoip6')}`,
+    'VirtualAddrNetworkIPv4 10.192.0.0/10',
+    'AutomapHostsOnResolve 1',
+    'AutomapHostsSuffixes .anyone',
   ];
 
   await fs.writeFile(configPath, configItems.join('\n') + '\n');
@@ -112,7 +123,7 @@ export async function createAnonConfigFile(options: Config): Promise<string> {
     }
   }
 
-  return configPath;
+  return { configPath, dataDir: tempDataDirPath };
 }
 
 export async function createProxyConfigFile(socksPort?: number): Promise<string> {
