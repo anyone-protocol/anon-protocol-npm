@@ -1,7 +1,4 @@
-import { Control } from '../src/control';
-import { ExtendCircuitOptions, StreamEvent, EventType, Flag } from '../src/models';
-import { Process } from "../src/process";
-import { VPNConfig } from '../src/models';
+import { Control, ExtendCircuitOptions, StreamEvent, EventType, Flag, Process, VPNConfig } from '../src';
 
 const config: VPNConfig = {
     routings: [
@@ -81,7 +78,7 @@ class AnonRunner {
                     const targetAddress = event.target.split(':')[0];
                     const circuitId = this.routingMap[targetAddress];
 
-                    if (circuitId && (event.circId === '0' || event.circId === undefined)) {
+                    if (circuitId && (event.circId === 0 || event.circId === undefined)) {
                         await this.control.attachStream(event.streamId, circuitId);
                     }
                 }

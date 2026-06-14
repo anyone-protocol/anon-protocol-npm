@@ -1,14 +1,10 @@
-import { Process } from "../src/process";
-import { Socks } from "../src/socks";
-
-import { Control } from '../src/control';
-import { ExtendCircuitOptions, StreamEvent, EventType } from '../src/models';
-import { VPNConfig, Flag } from '../src/models';
+import { Process , Socks, Control, ExtendCircuitOptions, StreamEvent, EventType, VPNConfig, Flag } from "../src";
 
 const config: VPNConfig = {
     routings: [
         { targetAddress: 'ip-api.com', exitCountries: ['de'] },
         { targetAddress: 'ipinfo.io', exitCountries: ['nl'] },
+        { targetAddress: 'ipv4.jsonip.com', exitCountries: ['uk', 'po', 'ro'] },
         { targetAddress: 'api.ipify.org', exitCountries: ['us'] },
     ]
 };
@@ -49,6 +45,7 @@ async function main() {
             });
 
             const exit = exitsByCountry[Math.floor(Math.random() * exitsByCountry.length)];
+            console.log('Exit:', exit);
             const guard = guards[Math.floor(Math.random() * guards.length)];
             const path = [guard.fingerprint, exit.fingerprint];
             console.log('Path:', path);
@@ -75,7 +72,7 @@ async function main() {
                 const targetAddress = event.target.split(':')[0];
                 const circuitId = routingMap[targetAddress];
 
-                if (circuitId && (event.circId === '0' || event.circId === undefined)) {
+                if (circuitId && (event.circId === 0 || event.circId === undefined)) {
                     await control.attachStream(event.streamId, circuitId);
                 }
             }
@@ -83,10 +80,11 @@ async function main() {
 
         await control.addEventListener(eventListener, EventType.STREAM);
 
-
         // Make a request through the established circuits
         const socks = new Socks(anon);
-        const response = await socks.get('https://api.ipify.org?format=json');
+        // const response = await socks.get('https://api.ipify.org?format=json');
+        // const response = await socks.get('https://ipinfo.io/json');
+        const response = await socks.get('https://ipv4.jsonip.com');
         console.log('Response:', response.data);
     } catch (error) {
         console.error('Error:', error);

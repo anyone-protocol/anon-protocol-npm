@@ -1,5 +1,4 @@
-import { Process } from "../../src/process";
-import { Socks } from "../../src/socks";
+import { Process, Socks } from "../../src";
 
 async function main() {
     try {

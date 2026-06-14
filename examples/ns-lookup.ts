@@ -1,6 +1,4 @@
-import { Control } from '../src/control';
-import { AddrMapEvent, EventType } from '../src/models';
-import { Process } from "../src/process";
+import { Control, AddrMapEvent, EventType, Process } from '../src';
 
 async function main() {
     console.log('Starting Anon...');
@@ -29,7 +27,7 @@ async function main() {
         await control.resolve('www.google.com');
 
         // sleep for a while to allow events to be received
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         // close connection
         control.end();

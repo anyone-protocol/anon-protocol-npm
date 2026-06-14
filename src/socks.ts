@@ -15,7 +15,6 @@ export class Socks {
     if (anonOrPort instanceof Process) {
       this.anon = anonOrPort;
       this.socksPort = this.anon.getSOCKSPort();
-      console.log('host:', host);
     } else {
       this.socksPort = anonOrPort;
     }
